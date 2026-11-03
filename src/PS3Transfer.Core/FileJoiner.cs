@@ -8,9 +8,12 @@ public static class FileJoiner
     {
         parts = [];
         var name = Path.GetFileName(anyPart);
+        if (PkgParts.TryParse(name, out _, out _))
+            return PkgParts.TryCollect(anyPart, out parts, out error);
+
         if (!SplitNames.TryParse(name, out var baseName, out _, out var scheme))
         {
-            error = "Choose the first split piece: a .iso.0 file, a .pkg.1 file, or a .66600 file.";
+            error = "Choose the first split piece: a .iso.0 file, a .pkg.1 file, a _1.pkg file, or a .66600 file.";
             return false;
         }
 
@@ -168,6 +171,163 @@ public static class FileJoiner
         return new TransferResult(TransferOutcome.Copied, session, null, null);
     }
 
+    public static async Task<TransferResult> JoinToSplitAsync(
+        IReadOnlyList<string> parts,
+        IReadOnlyList<string> outputs,
+        long splitSize,
+        bool verify,
+        IProgress<TransferProgress>? progress,
+        CancellationToken cancellationToken)
+    {
+        if (splitSize <= 0)
+            return new TransferResult(TransferOutcome.Failed, 0, "The split size is invalid.", null);
+        if (outputs.Count == 0)
+            return new TransferResult(TransferOutcome.Failed, 0, "The split layout is empty.", null);
+
+        long total = 0;
+        foreach (var part in parts)
+        {
+            if (!File.Exists(part))
+                return new TransferResult(TransferOutcome.Failed, 0, "Missing " + Path.GetFileName(part) + ".", null);
+            total += new FileInfo(part).Length;
+        }
+
+        if (outputs.Count != Ps3Layout.PartCount(total, splitSize))
+            return new TransferResult(TransferOutcome.Failed, 0, "The split layout does not match the package size.", null);
+
+        foreach (var output in outputs)
+        {
+            var directory = Path.GetDirectoryName(output);
+            if (!string.IsNullOrEmpty(directory))
+                Directory.CreateDirectory(directory);
+        }
+
+        var created = new List<string>();
+        var session = 0L;
+        var buffer = ArrayPool<byte>.Shared.Rent(4 * 1024 * 1024);
+        FileStream? dest = null;
+        try
+        {
+            var outputIndex = 0;
+            long inPart = 0;
+            foreach (var part in parts)
+            {
+                await using var source = new FileStream(PathUtil.Win32(part), FileMode.Open, FileAccess.Read, FileShare.Read, 1 << 20, FileOptions.SequentialScan);
+                while (true)
+                {
+                    cancellationToken.ThrowIfCancellationRequested();
+                    var n = await source.ReadAsync(buffer.AsMemory(0, buffer.Length), cancellationToken).ConfigureAwait(false);
+                    if (n == 0)
+                        break;
+
+                    var span = buffer.AsMemory(0, n);
+                    while (span.Length > 0)
+                    {
+                        if (dest is null || inPart >= splitSize)
+                        {
+                            if (dest is not null)
+                            {
+                                await dest.FlushAsync(cancellationToken).ConfigureAwait(false);
+                                await dest.DisposeAsync().ConfigureAwait(false);
+                                dest = null;
+                            }
+
+                            if (outputIndex >= outputs.Count)
+                            {
+                                DeleteAll(created);
+                                return new TransferResult(TransferOutcome.Failed, session, "The split layout ran out of files.", null);
+                            }
+
+                            var path = outputs[outputIndex];
+                            outputIndex++;
+                            dest = new FileStream(PathUtil.Win32(path), FileMode.Create, FileAccess.Write, FileShare.None, 1 << 20,
+                                FileOptions.Asynchronous | FileOptions.SequentialScan);
+                            created.Add(path);
+                            inPart = 0;
+                        }
+
+                        var take = (int)Math.Min(span.Length, splitSize - inPart);
+                        await dest.WriteAsync(span[..take], cancellationToken).ConfigureAwait(false);
+                        inPart += take;
+                        session += take;
+                        span = span[take..];
+                        progress?.Report(new TransferProgress(session, total, session, Path.GetFileName(part)));
+                    }
+                }
+            }
+
+            if (dest is not null)
+            {
+                await dest.FlushAsync(cancellationToken).ConfigureAwait(false);
+                dest.Flush(true);
+                await dest.DisposeAsync().ConfigureAwait(false);
+                dest = null;
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            if (dest is not null)
+                await dest.DisposeAsync().ConfigureAwait(false);
+            DeleteAll(created);
+            return new TransferResult(TransferOutcome.Canceled, session, null, null);
+        }
+        catch (IOException ex)
+        {
+            if (dest is not null)
+                await dest.DisposeAsync().ConfigureAwait(false);
+            DeleteAll(created);
+            return new TransferResult(TransferOutcome.Failed, session, ex.Message, null);
+        }
+        finally
+        {
+            ArrayPool<byte>.Shared.Return(buffer);
+        }
+
+        long written = 0;
+        foreach (var output in outputs)
+        {
+            if (!File.Exists(output))
+            {
+                DeleteAll(created);
+                return new TransferResult(TransferOutcome.Failed, session, "A split piece was not written.", null);
+            }
+
+            written += new FileInfo(output).Length;
+        }
+
+        if (written != total)
+        {
+            DeleteAll(created);
+            return new TransferResult(TransferOutcome.Failed, session, "The joined file is the wrong size.", null);
+        }
+
+        if (verify)
+        {
+            progress?.Report(new TransferProgress(total, total, session, "Verifying"));
+            uint sourceCrc = 0;
+            foreach (var part in parts)
+            {
+                await using var stream = new FileStream(part, FileMode.Open, FileAccess.Read, FileShare.Read);
+                sourceCrc = await CrcAsync(sourceCrc, stream, cancellationToken).ConfigureAwait(false);
+            }
+
+            uint destCrc = 0;
+            foreach (var output in outputs)
+            {
+                await using var stream = new FileStream(output, FileMode.Open, FileAccess.Read, FileShare.Read);
+                destCrc = await CrcAsync(destCrc, stream, cancellationToken).ConfigureAwait(false);
+            }
+
+            if (sourceCrc != destCrc)
+            {
+                DeleteAll(created);
+                return new TransferResult(TransferOutcome.Failed, session, "The joined file does not match the parts.", null);
+            }
+        }
+
+        return new TransferResult(TransferOutcome.Copied, session, null, null);
+    }
+
     private static async Task<uint> CrcAsync(uint crc, Stream stream, CancellationToken cancellationToken)
     {
         var buffer = ArrayPool<byte>.Shared.Rent(1024 * 1024);
@@ -197,5 +357,11 @@ public static class FileJoiner
         catch (IOException)
         {
         }
+    }
+
+    private static void DeleteAll(IEnumerable<string> paths)
+    {
+        foreach (var path in paths)
+            TryDelete(path);
     }
 }

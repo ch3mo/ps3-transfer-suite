@@ -28,6 +28,8 @@ public sealed class MainViewModel : ObservableObject
     private DriveRow? _selectedDrive;
     private QueueItemViewModel? _selectedItem;
     private LibraryRowViewModel? _selectedLibrary;
+    private readonly List<QueueItemViewModel> _queueSelection = [];
+    private readonly List<LibraryRowViewModel> _librarySelection = [];
     private int _tab;
     private bool _transferring;
     private bool _joining;
@@ -39,7 +41,7 @@ public sealed class MainViewModel : ObservableObject
     private string _status = "Plug in the USB drive the PS3 will use.";
     private string _startHint = "Add a game to begin.";
     private string _playTitle = "Add a PKG, an ISO, or an extracted package folder";
-    private string _playBody = "Split PKG parts are joined into one package when the drive can hold the file. An extracted package is copied to \\GAMEI so webMAN can launch it from the SSD. A PS3 ISO goes in \\PS3ISO and is split for FAT32 at the size webMAN already mounts. A ROM keeps its file name and goes in \\ROMS\\<system> for RetroArch.";
+    private string _playBody = "Split PKG parts, including name_1.pkg pieces, are joined into one package when the drive can hold the file. An extracted package is copied to \\GAMEI so webMAN can launch it from the SSD. A PS3 ISO goes in \\PS3ISO and is split for FAT32 at the size webMAN already mounts. A ROM keeps its file name and goes in \\ROMS\\<system> for RetroArch.";
     private double _overallFraction;
     private string _overallDetail = "";
     private string _libraryStatus = "Choose a drive.";
@@ -47,6 +49,11 @@ public sealed class MainViewModel : ObservableObject
     private string _joinStatus = "";
     private double _joinFraction;
     private IReadOnlyList<string> _joinFiles = [];
+    private readonly HashSet<string> _mergeSeen = new(StringComparer.OrdinalIgnoreCase);
+    private int _driveGeneration;
+    private int _driveRunning;
+    private int _driveRetries;
+    private bool _driveKeepSelection = true;
 
     public MainViewModel(IUserDialogs dialogs, Dispatcher dispatcher)
     {
@@ -61,12 +68,12 @@ public sealed class MainViewModel : ObservableObject
         _driveTimer.Tick += (_, _) =>
         {
             _driveTimer.Stop();
-            RefreshDrives(keepSelection: true);
+            KickDriveRefresh(keepSelection: true, resetRetries: false);
         };
 
         AddFilesCommand = new RelayCommand(AddFiles);
         AddFolderCommand = new RelayCommand(AddFolder);
-        RemoveCommand = new RelayCommand(RemoveSelected, () => SelectedItem is { IsRunning: false });
+        RemoveCommand = new RelayCommand(RemoveSelected, () => _queueSelection.Any(item => !item.IsRunning));
         StartCommand = new RelayCommand(Start, () => CanStart());
         StopCommand = new RelayCommand(Stop, () => Transferring || Joining);
         ReplaceCommand = new RelayCommand<QueueItemViewModel>(Replace, item => item is { IsRunning: false, ShowReplace: true });
@@ -76,12 +83,13 @@ public sealed class MainViewModel : ObservableObject
         ShowTransferCommand = new RelayCommand(() => Tab = 0);
         ShowLibraryCommand = new RelayCommand(() => Tab = 1);
         ShowJoinCommand = new RelayCommand(() => Tab = 2);
-        DeleteLibraryCommand = new RelayCommand(DeleteLibrary, () => CanEdit && SelectedLibrary is not null);
+        DeleteLibraryCommand = new RelayCommand(DeleteLibrary, () => CanEdit && _librarySelection.Count > 0);
         OrganizeRomsCommand = new RelayCommand(() => _ = OrganizeAsync(), () => CanEdit && SelectedDrive is { Verdict: not DriveVerdict.Blocked });
+        MergeLibraryCommand = new RelayCommand(() => _ = MergeSelectedAsync(), () => CanEdit && _librarySelection.Any(row => row.Entry.OfferMerge));
         PickJoinCommand = new RelayCommand(PickJoin, () => !_joining);
         JoinCommand = new RelayCommand(StartJoin, () => !_joining && _joinFiles.Count > 0);
 
-        RefreshDrives(keepSelection: false);
+        KickDriveRefresh(keepSelection: false, resetRetries: true);
     }
 
     public ObservableCollection<DriveRow> Drives { get; } = [];
@@ -103,6 +111,7 @@ public sealed class MainViewModel : ObservableObject
     public RelayCommand ShowJoinCommand { get; }
     public RelayCommand DeleteLibraryCommand { get; }
     public RelayCommand OrganizeRomsCommand { get; }
+    public RelayCommand MergeLibraryCommand { get; }
     public RelayCommand PickJoinCommand { get; }
     public RelayCommand JoinCommand { get; }
 
@@ -122,31 +131,35 @@ public sealed class MainViewModel : ObservableObject
         }
     }
 
-    public QueueItemViewModel? SelectedItem
-    {
-        get => _selectedItem;
-        set
-        {
-            if (!Set(ref _selectedItem, value))
-                return;
-            if (value?.Plan is { } plan)
-            {
-                PlayTitle = plan.PlayTitle;
-                PlayBody = plan.PlayBody;
-            }
+    public QueueItemViewModel? SelectedItem => _selectedItem;
 
-            RemoveCommand.Raise();
+    public LibraryRowViewModel? SelectedLibrary => _selectedLibrary;
+
+    public void SetQueueSelection(IReadOnlyList<QueueItemViewModel> items, QueueItemViewModel? current)
+    {
+        _queueSelection.Clear();
+        foreach (var item in items)
+            _queueSelection.Add(item);
+        _selectedItem = current;
+        Raise(nameof(SelectedItem));
+        if (current?.Plan is { } plan)
+        {
+            PlayTitle = plan.PlayTitle;
+            PlayBody = plan.PlayBody;
         }
+
+        RemoveCommand.Raise();
     }
 
-    public LibraryRowViewModel? SelectedLibrary
+    public void SetLibrarySelection(IReadOnlyList<LibraryRowViewModel> items)
     {
-        get => _selectedLibrary;
-        set
-        {
-            if (Set(ref _selectedLibrary, value))
-                DeleteLibraryCommand.Raise();
-        }
+        _librarySelection.Clear();
+        foreach (var item in items)
+            _librarySelection.Add(item);
+        _selectedLibrary = items.Count == 0 ? null : items[^1];
+        Raise(nameof(SelectedLibrary));
+        DeleteLibraryCommand.Raise();
+        MergeLibraryCommand.Raise();
     }
 
     public bool Transferring => _transferring;
@@ -251,6 +264,8 @@ public sealed class MainViewModel : ObservableObject
 
     public void ScheduleDriveRefresh()
     {
+        _driveRetries = 0;
+        _driveTimer.Interval = TimeSpan.FromMilliseconds(700);
         _driveTimer.Stop();
         _driveTimer.Start();
     }
@@ -364,12 +379,15 @@ public sealed class MainViewModel : ObservableObject
 
     private void RemoveSelected()
     {
-        if (SelectedItem is null || SelectedItem.IsRunning)
+        var doomed = _queueSelection.Where(item => !item.IsRunning).ToList();
+        if (doomed.Count == 0)
             return;
-        var item = SelectedItem;
-        Queue.Remove(item);
-        SelectedItem = null;
-        ReleaseExtract(item, stillQueued: false);
+        foreach (var item in doomed)
+        {
+            Queue.Remove(item);
+            ReleaseExtract(item, stillQueued: false);
+        }
+
         Replan();
     }
 
@@ -533,7 +551,7 @@ public sealed class MainViewModel : ObservableObject
                 Status = _waveFragment ?? "Finished. Plug the drive into the PS3.";
             if (!_waveCanceled && _waveFailures == 0)
                 OverallFraction = 1;
-            RefreshDrives(keepSelection: true);
+            KickDriveRefresh(keepSelection: true, resetRetries: true);
         }
         else
         {
@@ -722,12 +740,74 @@ public sealed class MainViewModel : ObservableObject
         SettingsStore.Save(_settings);
     }
 
-    private void Refresh() => RefreshDrives(keepSelection: true);
+    private void Refresh() => KickDriveRefresh(keepSelection: true, resetRetries: true);
 
-    private void RefreshDrives(bool keepSelection)
+    private void KickDriveRefresh(bool keepSelection, bool resetRetries)
+    {
+        if (resetRetries)
+        {
+            _driveRetries = 0;
+            _driveTimer.Interval = TimeSpan.FromMilliseconds(700);
+        }
+
+        _driveKeepSelection = keepSelection;
+        Interlocked.Increment(ref _driveGeneration);
+        _ = PumpDriveRefreshAsync();
+    }
+
+    private async Task PumpDriveRefreshAsync()
+    {
+        if (Interlocked.CompareExchange(ref _driveRunning, 1, 0) != 0)
+            return;
+
+        var applied = -1;
+        try
+        {
+            while (true)
+            {
+                var generation = _driveGeneration;
+                var keep = _driveKeepSelection;
+                DriveScan scan;
+                try
+                {
+                    scan = await Task.Run(DriveService.List);
+                }
+                catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+                {
+                    AppLog.Write(ex.Message);
+                    applied = generation;
+                    return;
+                }
+
+                if (generation != _driveGeneration)
+                    continue;
+
+                ApplyDriveRows(scan.Rows, keep);
+                applied = generation;
+                if (scan.Again && generation == _driveGeneration && _driveRetries < 15)
+                {
+                    _driveRetries++;
+                    _driveTimer.Interval = TimeSpan.FromSeconds(2);
+                    _driveTimer.Stop();
+                    _driveTimer.Start();
+                }
+
+                if (generation != _driveGeneration)
+                    continue;
+                return;
+            }
+        }
+        finally
+        {
+            Interlocked.Exchange(ref _driveRunning, 0);
+            if (applied != _driveGeneration)
+                _ = PumpDriveRefreshAsync();
+        }
+    }
+
+    private void ApplyDriveRows(IReadOnlyList<DriveRow> rows, bool keepSelection)
     {
         var previous = _selectedDrive?.Root;
-        var rows = DriveService.List();
         Drives.Clear();
         foreach (var row in rows)
             Drives.Add(row);
@@ -782,6 +862,7 @@ public sealed class MainViewModel : ObservableObject
         EjectCommand.Raise();
         StartCommand.Raise();
         OrganizeRomsCommand.Raise();
+        MergeLibraryCommand.Raise();
     }
 
     private void Eject()
@@ -795,7 +876,7 @@ public sealed class MainViewModel : ObservableObject
         Status = error ?? "The drive can be unplugged.";
         if (error is null)
             AppLog.Write("Ejected " + drive.Root);
-        RefreshDrives(keepSelection: true);
+        KickDriveRefresh(keepSelection: true, resetRetries: true);
     }
 
     private async Task ScanLibraryAsync()
@@ -809,6 +890,7 @@ public sealed class MainViewModel : ObservableObject
         }
 
         var root = drive.Root;
+        LibraryStatus = "Reading the drive...";
         try
         {
             var entries = await Task.Run(() => LibraryCatalog.Scan(root));
@@ -817,12 +899,29 @@ public sealed class MainViewModel : ObservableObject
             Library.Clear();
             foreach (var entry in entries)
                 Library.Add(new LibraryRowViewModel(entry));
+            MergeLibraryCommand.Raise();
             var loose = entries.Count(entry => entry.Category == "Loose ROM");
-            LibraryStatus = entries.Count == 0
+            var mergeable = entries.Count(entry => entry.OfferMerge);
+            var status = entries.Count == 0
                 ? "No PS3 games or ROMs on this drive yet."
                 : loose == 0
                     ? entries.Count + " entries on the drive."
                     : entries.Count + " entries on the drive. " + loose + (loose == 1 ? " ROM is" : " ROMs are") + " not in \\ROMS yet.";
+            if (mergeable > 0)
+                status += mergeable == 1
+                    ? " 1 split package can be merged."
+                    : " " + mergeable + " split packages can be merged.";
+            LibraryStatus = status;
+            var fresh = new List<LibraryEntry>();
+            foreach (var entry in entries)
+            {
+                if (!entry.OfferMerge || !_mergeSeen.Add(MergeKey(entry)))
+                    continue;
+                fresh.Add(entry);
+            }
+
+            if (fresh.Count > 0)
+                await OfferMergesAsync(drive, fresh);
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
@@ -832,26 +931,207 @@ public sealed class MainViewModel : ObservableObject
 
     private void DeleteLibrary()
     {
-        if (!CanEdit || _selectedDrive is null || SelectedLibrary is null)
+        if (!CanEdit || _selectedDrive is null || _librarySelection.Count == 0)
             return;
-        var entry = SelectedLibrary.Entry;
-        var files = entry.Files.Count;
+        var rows = _librarySelection.ToList();
+        var files = rows.Sum(row => row.Entry.Files.Count);
         var noun = files == 1 ? "1 file" : files + " files";
-        if (!_dialogs.Confirm("Remove " + entry.Title + "?", "This deletes " + noun + " from " + entry.Category + " on the drive."))
+        var heading = rows.Count == 1 ? "Remove " + rows[0].Title + "?" : "Remove " + rows.Count + " items?";
+        var names = new List<string>();
+        foreach (var row in rows.Take(8))
+            names.Add(row.Title);
+        if (rows.Count > 8)
+            names.Add("…");
+        if (!_dialogs.Confirm(heading, "This deletes " + noun + " from the drive.\n\n" + string.Join("\n", names)))
             return;
-        try
+
+        string? failed = null;
+        foreach (var row in rows)
         {
-            LibraryCatalog.Delete(_selectedDrive.Root, entry);
-            AppLog.Write("Deleted " + entry.RelativePath);
-        }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidOperationException)
-        {
-            _dialogs.Tell("Could not delete", ex.Message);
-            return;
+            try
+            {
+                LibraryCatalog.Delete(_selectedDrive.Root, row.Entry);
+                AppLog.Write("Deleted " + row.Entry.RelativePath);
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidOperationException)
+            {
+                failed = ex.Message;
+                break;
+            }
         }
 
+        if (failed is not null)
+            _dialogs.Tell("Could not delete", failed);
         _ = ScanLibraryAsync();
     }
+
+    private async Task MergeSelectedAsync()
+    {
+        if (!CanEdit || _selectedDrive is null)
+            return;
+        var rows = _librarySelection.Where(row => row.Entry.OfferMerge).ToList();
+        if (rows.Count == 0)
+            return;
+
+        var plans = new List<PkgMergePlan>();
+        foreach (var row in rows)
+        {
+            var entry = row.Entry;
+            _mergeSeen.Add(MergeKey(entry));
+            if (!PkgMerger.TryPlan(_selectedDrive.Root, _selectedDrive.FileSystem, entry.Files, out var plan, out var error) || plan is null)
+            {
+                _dialogs.Tell("Cannot merge " + entry.Title, error ?? "Those pieces do not form one package.");
+                continue;
+            }
+
+            plans.Add(plan);
+        }
+
+        if (plans.Count == 0)
+            return;
+        var title = plans.Count == 1 ? "Merge " + plans[0].Title + "?" : "Merge " + plans.Count + " packages?";
+        if (!_dialogs.Confirm(title, string.Join("\n\n", plans.Select(item => item.Summary))))
+            return;
+        await RunMergesAsync(_selectedDrive, plans);
+    }
+
+    private async Task OfferMergesAsync(DriveRow drive, IReadOnlyList<LibraryEntry> fresh)
+    {
+        if (!CanEdit || !string.Equals(_selectedDrive?.Root, drive.Root, StringComparison.OrdinalIgnoreCase))
+            return;
+
+        var plans = new List<PkgMergePlan>();
+        foreach (var entry in fresh)
+        {
+            if (!PkgMerger.TryPlan(drive.Root, drive.FileSystem, entry.Files, out var plan, out var error) || plan is null)
+            {
+                _dialogs.Tell("Cannot merge " + entry.Title, error ?? "Those pieces do not form one package.");
+                continue;
+            }
+
+            plans.Add(plan);
+        }
+
+        if (plans.Count == 0 || !string.Equals(_selectedDrive?.Root, drive.Root, StringComparison.OrdinalIgnoreCase))
+            return;
+
+        var title = plans.Count == 1 ? "Merge " + plans[0].Title + "?" : "Merge split packages?";
+        if (!_dialogs.Confirm(title, string.Join("\n\n", plans.Select(item => item.Summary))))
+            return;
+        await RunMergesAsync(drive, plans);
+    }
+
+    private async Task RunMergesAsync(DriveRow drive, IReadOnlyList<PkgMergePlan> plans)
+    {
+        if (_joining || plans.Count == 0)
+            return;
+
+        var existing = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var existingList = new List<string>();
+        foreach (var plan in plans)
+        {
+            foreach (var output in plan.Outputs)
+            {
+                if (File.Exists(output) && existing.Add(output))
+                    existingList.Add(output);
+            }
+        }
+
+        if (existingList.Count > 0 && !_dialogs.Confirm("Replace the existing package?", string.Join("\n", existingList) + "\n\nThese files will be overwritten."))
+            return;
+
+        _joining = true;
+        _joinRun = new CancellationTokenSource();
+        RaiseBusy();
+        OverallFraction = 0;
+        try
+        {
+            foreach (var plan in plans)
+            {
+                if (!string.Equals(_selectedDrive?.Root, drive.Root, StringComparison.OrdinalIgnoreCase))
+                    return;
+
+                string fileSystem;
+                long free;
+                try
+                {
+                    var info = new DriveInfo(drive.Root);
+                    fileSystem = info.DriveFormat;
+                    free = info.AvailableFreeSpace;
+                }
+                catch (IOException ex)
+                {
+                    LibraryStatus = ex.Message;
+                    return;
+                }
+
+                long reclaim = 0;
+                foreach (var output in plan.Outputs)
+                {
+                    if (File.Exists(output))
+                        reclaim += new FileInfo(output).Length;
+                }
+
+                if (plan.Bytes - reclaim > free - SpaceMargin)
+                {
+                    LibraryStatus = "The drive has " + ByteSize.Format(free) + " free. " + plan.Title + " needs " + ByteSize.Format(plan.Bytes) + " free while the merged package is written.";
+                    _dialogs.Tell("Not enough free space", LibraryStatus);
+                    return;
+                }
+
+                var progress = new UiProgress(_dispatcher, value =>
+                {
+                    OverallFraction = value.FileLength <= 0 ? 0 : Math.Clamp((double)value.FilePosition / value.FileLength, 0, 1);
+                    OverallDetail = value.Detail;
+                    LibraryStatus = "Merging " + plan.Title + " · " + value.Detail;
+                });
+                var result = await PkgMerger.ApplyAsync(drive.Root, plan, fileSystem, VerifyCrc, progress, _joinRun.Token);
+                if (result.Outcome == TransferOutcome.Canceled)
+                {
+                    LibraryStatus = "Merge stopped. The unfinished file was removed.";
+                    Status = LibraryStatus;
+                    return;
+                }
+
+                if (result.Outcome != TransferOutcome.Copied)
+                {
+                    LibraryStatus = result.Error ?? "The merge failed.";
+                    _dialogs.Tell("Could not merge " + plan.Title, LibraryStatus);
+                    return;
+                }
+
+                OverallFraction = 1;
+                var done = plan.OneFile
+                    ? "Merged " + plan.Title + " into " + plan.Outputs[0] + "."
+                    : "Merged " + plan.Title + ". multiMAN can install the parts in " + Path.GetDirectoryName(plan.Outputs[0]) + ".";
+                if (!string.IsNullOrEmpty(result.Warning))
+                    done += " " + result.Warning;
+                Status = done;
+                LibraryStatus = done;
+                AppLog.Write("Merge " + done);
+            }
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            LibraryStatus = ex.Message;
+            _dialogs.Tell("Could not merge", ex.Message);
+        }
+        finally
+        {
+            _joining = false;
+            _joinRun?.Dispose();
+            _joinRun = null;
+            RaiseBusy();
+            if (_closeAfterStop && _activeCopies == 0)
+                CloseRequested?.Invoke();
+        }
+
+        if (string.Equals(_selectedDrive?.Root, drive.Root, StringComparison.OrdinalIgnoreCase))
+            await ScanLibraryAsync();
+    }
+
+    private static string MergeKey(LibraryEntry entry) =>
+        string.Join("|", entry.Files.OrderBy(path => path, StringComparer.OrdinalIgnoreCase));
 
     private async Task OrganizeAsync()
     {
@@ -957,8 +1237,11 @@ public sealed class MainViewModel : ObservableObject
         if (_joining || _joinFiles.Count == 0)
             return;
         var suggested = "joined.bin";
-        if (SplitNames.TryParse(Path.GetFileName(_joinFiles[0]), out var baseName, out _, out _))
+        var firstName = Path.GetFileName(_joinFiles[0]);
+        if (SplitNames.TryParse(firstName, out var baseName, out _, out _))
             suggested = baseName;
+        else if (PkgParts.TryParse(firstName, out var joined, out _))
+            suggested = joined;
         var output = _dialogs.PickSave(suggested);
         if (string.IsNullOrWhiteSpace(output))
             return;
@@ -1060,6 +1343,7 @@ public sealed class MainViewModel : ObservableObject
         RefreshCommand.Raise();
         DeleteLibraryCommand.Raise();
         OrganizeRomsCommand.Raise();
+        MergeLibraryCommand.Raise();
         PickJoinCommand.Raise();
         JoinCommand.Raise();
     }

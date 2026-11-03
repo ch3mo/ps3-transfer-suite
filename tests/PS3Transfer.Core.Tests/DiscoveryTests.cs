@@ -96,6 +96,43 @@ public class DiscoveryTests
     }
 
     [Fact]
+    public void Underscore_pkg_parts_are_one_package_and_a_single_file_stays_alone()
+    {
+        using var dir = new TempDir();
+        File.WriteAllBytes(dir.Sub("nhl15_1.pkg"), [1, 2]);
+        File.WriteAllBytes(dir.Sub("nhl15_2.pkg"), [3]);
+        File.WriteAllBytes(dir.Sub("nhl15_3.pkg"), [4]);
+        File.WriteAllBytes(dir.Sub("nhl15_4.pkg"), [5]);
+        File.WriteAllBytes(dir.Sub("update_1.pkg"), [9]);
+
+        var found = SourceDiscovery.Collect([dir.Path]);
+        var nhl = Assert.Single(found.Groups, g => g.Label.Equals("nhl15.pkg", StringComparison.OrdinalIgnoreCase));
+        Assert.Equal(4, nhl.Files.Count);
+        Assert.False(nhl.Incomplete);
+        Assert.EndsWith("nhl15_1.pkg", nhl.Files[0], StringComparison.OrdinalIgnoreCase);
+        Assert.EndsWith("nhl15_4.pkg", nhl.Files[3], StringComparison.OrdinalIgnoreCase);
+        var alone = Assert.Single(found.Groups, g => g.Label.Equals("update_1.pkg", StringComparison.OrdinalIgnoreCase));
+        Assert.Single(alone.Files);
+    }
+
+    [Fact]
+    public void Underscore_pkg_gap_is_incomplete_and_the_joiner_finds_a_full_set()
+    {
+        using var dir = new TempDir();
+        File.WriteAllBytes(dir.Sub("nhl15_1.pkg"), [1]);
+        File.WriteAllBytes(dir.Sub("nhl15_3.pkg"), [3]);
+        var gap = SourceDiscovery.Collect([dir.Path]);
+        var broken = Assert.Single(gap.Groups, g => g.Label.Equals("nhl15.pkg", StringComparison.OrdinalIgnoreCase));
+        Assert.True(broken.Incomplete);
+
+        File.WriteAllBytes(dir.Sub("nhl15_2.pkg"), [2]);
+        Assert.True(FileJoiner.TryDiscover(dir.Sub("nhl15_2.pkg"), out var parts, out var error));
+        Assert.Null(error);
+        Assert.Equal(3, parts.Count);
+        Assert.False(FileJoiner.TryDiscover(dir.Sub("update_1.pkg"), out _, out _));
+    }
+
+    [Fact]
     public void Drive_root_is_rejected()
     {
         var root = Path.GetPathRoot(Path.GetTempPath())!;

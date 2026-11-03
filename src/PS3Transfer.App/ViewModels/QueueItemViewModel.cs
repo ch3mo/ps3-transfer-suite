@@ -238,6 +238,9 @@ public sealed class LibraryRowViewModel
 
     public LibraryEntry Entry { get; }
     public string Title => Entry.Title;
-    public string Meta => Entry.Category + " · " + ByteSize.Format(Entry.Bytes) + (Entry.Split ? " · " + Entry.Parts + " parts" : "");
+    public string Meta => Entry.Category + " · " + ByteSize.Format(Entry.Bytes)
+        + (Entry.Split ? " · " + Entry.Parts + " parts" : "")
+        + (Entry.OfferMerge ? " · split PKG, merge to install" : "")
+        + (string.IsNullOrEmpty(Entry.Note) ? "" : " · " + Entry.Note);
     public string Path => Entry.RelativePath;
 }

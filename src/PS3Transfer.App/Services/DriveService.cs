@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using PS3Transfer.App.Mvvm;
 using PS3Transfer.Core;
 
@@ -32,27 +33,91 @@ public sealed class DriveRow : ObservableObject
     }
 }
 
+public readonly record struct DriveScan(IReadOnlyList<DriveRow> Rows, bool Again);
+
 public static class DriveService
 {
-    public static IReadOnlyList<DriveRow> List()
+    private static readonly TimeSpan ProbeLimit = TimeSpan.FromSeconds(2);
+    private static readonly ConcurrentDictionary<string, byte> Probing = new(StringComparer.OrdinalIgnoreCase);
+
+    public static DriveScan List()
     {
         var system = Path.GetPathRoot(Environment.SystemDirectory) ?? "";
-        var rows = new List<DriveRow>();
-        foreach (var drive in DriveInfo.GetDrives())
+        DriveInfo[] found;
+        try
         {
-            if (!drive.IsReady || drive.DriveType is DriveType.CDRom or DriveType.NoRootDirectory)
-                continue;
-            try
-            {
-                rows.Add(Describe(drive, system));
-            }
-            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
-            {
-                AppLog.Write(drive.Name + " " + ex.Message);
-            }
+            found = DriveInfo.GetDrives();
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            AppLog.Write(ex.Message);
+            return new DriveScan([], true);
         }
 
-        return rows;
+        var probes = new List<Task<ProbeHit>>();
+        foreach (var drive in found)
+        {
+            if (drive.DriveType is DriveType.CDRom or DriveType.NoRootDirectory)
+                continue;
+            var captured = drive;
+            probes.Add(Task.Run(() => Probe(captured, system)));
+        }
+
+        if (probes.Count == 0)
+            return new DriveScan([], false);
+
+        bool finished;
+        try
+        {
+            finished = Task.WaitAll(probes.ToArray(), ProbeLimit);
+        }
+        catch (AggregateException ex)
+        {
+            AppLog.Write(ex.GetBaseException().Message);
+            finished = false;
+        }
+        var rows = new List<DriveRow>();
+        var again = !finished;
+        foreach (var probe in probes)
+        {
+            if (!probe.IsCompletedSuccessfully)
+            {
+                again = true;
+                continue;
+            }
+
+            if (probe.Result.Retry)
+                again = true;
+            if (probe.Result.Row is { } row)
+                rows.Add(row);
+        }
+
+        return new DriveScan(rows, again);
+    }
+
+    private readonly record struct ProbeHit(DriveRow? Row, bool Retry);
+
+    private static ProbeHit Probe(DriveInfo drive, string systemRoot)
+    {
+        var root = drive.Name;
+        if (!Probing.TryAdd(root, 0))
+            return new ProbeHit(null, true);
+
+        try
+        {
+            if (!drive.IsReady)
+                return new ProbeHit(null, false);
+            return new ProbeHit(Describe(drive, systemRoot), false);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or System.Security.SecurityException)
+        {
+            AppLog.Write(root + " " + ex.Message);
+            return new ProbeHit(null, false);
+        }
+        finally
+        {
+            Probing.TryRemove(root, out _);
+        }
     }
 
     public static string? Eject(string root) => VolumeApi.Eject(root);

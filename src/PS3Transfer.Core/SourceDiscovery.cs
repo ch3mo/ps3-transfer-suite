@@ -295,6 +295,8 @@ public static class SourceDiscovery
             groups.Add(Make(DiscoveryMode.LogicalParts, baseName, paths, note, incomplete, bag));
         }
 
+        GroupUnderscorePkgs(files, consumed, groups, notes, bag);
+
         foreach (var file in files)
         {
             if (consumed.Contains(file))
@@ -384,6 +386,69 @@ public static class SourceDiscovery
         }
 
         return groups;
+    }
+
+    private static void GroupUnderscorePkgs(
+        IReadOnlyList<string> files,
+        HashSet<string> consumed,
+        List<DiscoveredGroup> groups,
+        List<string> notes,
+        Bag bag)
+    {
+        var pool = new List<string>();
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var file in files)
+        {
+            if (consumed.Contains(file) || !seen.Add(file))
+                continue;
+            pool.Add(file);
+            if (!PkgParts.TryParse(Path.GetFileName(file), out var baseName, out _))
+                continue;
+
+            var directory = Path.GetDirectoryName(file);
+            if (string.IsNullOrEmpty(directory))
+                continue;
+
+            IEnumerable<string> siblings;
+            try
+            {
+                siblings = Directory.EnumerateFiles(directory, "*.pkg");
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                notes.Add("Could not read " + directory + ". " + ex.Message);
+                continue;
+            }
+
+            foreach (var sibling in siblings)
+            {
+                if (!PkgParts.TryParse(Path.GetFileName(sibling), out var otherBase, out _))
+                    continue;
+                if (!otherBase.Equals(baseName, StringComparison.OrdinalIgnoreCase))
+                    continue;
+                if (seen.Add(sibling))
+                    pool.Add(sibling);
+            }
+        }
+
+        var requested = new HashSet<string>(files, StringComparer.OrdinalIgnoreCase);
+        foreach (var set in PkgParts.Group(pool))
+        {
+            var touchesRequest = false;
+            foreach (var part in set.Files)
+            {
+                if (!requested.Contains(part))
+                    continue;
+                touchesRequest = true;
+                consumed.Add(part);
+            }
+
+            if (!touchesRequest)
+                continue;
+            if (!set.Complete && set.Note is not null)
+                notes.Add(set.Note);
+            groups.Add(Make(DiscoveryMode.LogicalParts, set.BaseName, set.Files, set.Note, !set.Complete, bag));
+        }
     }
 
     private static DiscoveredGroup Make(

@@ -202,9 +202,25 @@ public partial class MainWindow : Window
             _ = _model.AddPathsAsync(paths);
     }
 
+    private void QueueSelectionChanged(object sender, System.Windows.Controls.SelectionChangedEventArgs e)
+    {
+        if (sender is not System.Windows.Controls.ListBox list)
+            return;
+        var items = list.SelectedItems.OfType<QueueItemViewModel>().ToList();
+        var current = e.AddedItems.OfType<QueueItemViewModel>().LastOrDefault() ?? items.LastOrDefault();
+        _model.SetQueueSelection(items, current);
+    }
+
+    private void LibrarySelectionChanged(object sender, System.Windows.Controls.SelectionChangedEventArgs e)
+    {
+        if (sender is not System.Windows.Controls.ListBox list)
+            return;
+        _model.SetLibrarySelection(list.SelectedItems.OfType<LibraryRowViewModel>().ToList());
+    }
+
     private void QueueKeyDown(object sender, KeyEventArgs e)
     {
-        if (e.Key == Key.Delete && _model.SelectedItem is { IsRunning: false })
+        if (e.Key == Key.Delete && _model.RemoveCommand.CanExecute(null))
         {
             _model.RemoveCommand.Execute(null);
             e.Handled = true;

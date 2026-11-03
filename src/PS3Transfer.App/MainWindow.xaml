@@ -219,7 +219,7 @@
           </Border>
 
           <Grid>
-            <ListBox ItemsSource="{Binding Queue}" SelectedItem="{Binding SelectedItem}" PreviewKeyDown="QueueKeyDown">
+            <ListBox x:Name="QueueList" ItemsSource="{Binding Queue}" SelectionMode="Extended" SelectionChanged="QueueSelectionChanged" PreviewKeyDown="QueueKeyDown">
               <ListBox.ItemTemplate>
                 <DataTemplate>
                   <StackPanel>
@@ -304,10 +304,11 @@
           <StackPanel DockPanel.Dock="Top" Orientation="Horizontal" Margin="0,0,0,12">
             <Button Content="Refresh" Command="{Binding RefreshCommand}" Style="{StaticResource GhostButton}"/>
             <Button Content="Organize for RetroArch" Command="{Binding OrganizeRomsCommand}" Style="{StaticResource GhostButton}"/>
+            <Button Content="Merge package" Command="{Binding MergeLibraryCommand}" Style="{StaticResource GhostButton}"/>
             <Button Content="Remove from drive" Command="{Binding DeleteLibraryCommand}" Style="{StaticResource GhostButton}"/>
             <TextBlock Text="{Binding LibraryStatus}" VerticalAlignment="Center" Foreground="{StaticResource MutedBrush}"/>
           </StackPanel>
-          <ListBox ItemsSource="{Binding Library}" SelectedItem="{Binding SelectedLibrary}">
+          <ListBox x:Name="LibraryList" ItemsSource="{Binding Library}" SelectionMode="Extended" SelectionChanged="LibrarySelectionChanged">
             <ListBox.ItemTemplate>
               <DataTemplate>
                 <StackPanel>
@@ -334,7 +335,7 @@
         </Grid.Style>
         <StackPanel MaxWidth="640" HorizontalAlignment="Left">
           <TextBlock Text="Join a split set" FontSize="22" FontWeight="SemiBold" FontFamily="Segoe UI" Foreground="{StaticResource TextBrush}"/>
-          <TextBlock Text="Join .iso.0, .pkg.1, or .66600 pieces into one file on a disk that can hold it." Margin="0,8,0,0" TextWrapping="Wrap" Foreground="{StaticResource MutedBrush}"/>
+          <TextBlock Text="Join .iso.0, .pkg.1, _1.pkg, or .66600 pieces into one file on a disk that can hold it." Margin="0,8,0,0" TextWrapping="Wrap" Foreground="{StaticResource MutedBrush}"/>
           <StackPanel Orientation="Horizontal" Margin="0,14,0,0">
             <Button Content="Choose a piece" Command="{Binding PickJoinCommand}" Style="{StaticResource GhostButton}"/>
             <Button Content="Join and save" Command="{Binding JoinCommand}" Style="{StaticResource PrimaryButton}"/>

@@ -47,7 +47,7 @@ public sealed class WindowDialogs : IUserDialogs
         var dialog = new OpenFileDialog
         {
             Title = "Choose one piece of the split set",
-            Filter = "Split pieces|*.0;*.66600;*.001|All files|*.*",
+            Filter = "Split pieces|*.pkg;*.0;*.1;*.66600;*.001|All files|*.*",
         };
         return dialog.ShowDialog(_owner) == true ? dialog.FileName : null;
     }

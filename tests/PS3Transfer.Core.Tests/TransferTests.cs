@@ -159,6 +159,55 @@ public class TransferTests
     }
 
     [Fact]
+    public async Task Underscore_pkg_on_the_drive_is_offered_and_merges_into_one_file()
+    {
+        using var drive = new TempDir();
+        File.WriteAllBytes(drive.Sub("nhl15_1.pkg"), [1, 2, 3]);
+        File.WriteAllBytes(drive.Sub("nhl15_2.pkg"), [4, 5]);
+        var loose = Assert.Single(LibraryCatalog.Scan(drive.Path));
+        Assert.Equal("nhl15", loose.Title);
+        Assert.True(loose.OfferMerge);
+        Assert.Equal(2, loose.Parts);
+
+        Assert.True(PkgMerger.TryPlan(drive.Path, "NTFS", loose.Files, out var plan, out var error));
+        Assert.Null(error);
+        Assert.NotNull(plan);
+        Assert.True(plan.OneFile);
+        Assert.EndsWith(Path.Combine("PKG", "nhl15.pkg"), plan.Outputs[0], StringComparison.OrdinalIgnoreCase);
+
+        var fat = PkgMerger.Layout(drive.Path, "FAT32", "nhl15.pkg", loose.Files, Ps3Layout.SplitSize + 8);
+        Assert.False(fat.OneFile);
+        Assert.Contains(fat.Outputs, path => path.EndsWith("nhl15.pkg.66600", StringComparison.OrdinalIgnoreCase));
+
+        var result = await PkgMerger.ApplyAsync(drive.Path, plan, "NTFS", verify: true, progress: null, CancellationToken.None);
+        Assert.Equal(TransferOutcome.Copied, result.Outcome);
+        Assert.Equal(new byte[] { 1, 2, 3, 4, 5 }, File.ReadAllBytes(plan.Outputs[0]));
+        Assert.False(File.Exists(drive.Sub("nhl15_1.pkg")));
+        Assert.False(File.Exists(drive.Sub("nhl15_2.pkg")));
+    }
+
+    [Fact]
+    public async Task Split_join_keeps_part_bytes_in_order()
+    {
+        using var dir = new TempDir();
+        var first = dir.Sub("a_1.pkg");
+        var second = dir.Sub("a_2.pkg");
+        File.WriteAllBytes(first, [1, 2, 3, 4]);
+        File.WriteAllBytes(second, [5, 6]);
+        var folder = dir.Sub("out");
+        Directory.CreateDirectory(folder);
+        var outputs = new[]
+        {
+            Path.Combine(folder, "a.pkg.66600"),
+            Path.Combine(folder, "a.pkg.66601"),
+        };
+        var result = await FileJoiner.JoinToSplitAsync([first, second], outputs, splitSize: 3, verify: true, progress: null, CancellationToken.None);
+        Assert.Equal(TransferOutcome.Copied, result.Outcome);
+        Assert.Equal(new byte[] { 1, 2, 3 }, File.ReadAllBytes(outputs[0]));
+        Assert.Equal(new byte[] { 4, 5, 6 }, File.ReadAllBytes(outputs[1]));
+    }
+
+    [Fact]
     public void Library_groups_split_parts_into_one_game()
     {
         using var drive = new TempDir();

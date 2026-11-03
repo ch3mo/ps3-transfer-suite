@@ -13,7 +13,7 @@ FAT32 cannot store a file over 4 GB, including on a 250 GB stick. Files that web
 | PS3 ISO, including pieces over 4 GB | `\PS3ISO`, as `.iso.0`, `.iso.1`, … | webMAN Games. Hold SELECT and refresh if the list is stale. |
 | Extracted package folder (`PARAM.SFO` and `USRDIR`) | `\GAMEI\<title id>\` | webMAN Setup → Scan for content → enable GAMEI and app_home. Then Setup → Files → the USB drive → GAMEI → highlight the folder → X. The game launches from the SSD. |
 | PKG that fits in one file | `\packages` on FAT32, `\PKG` on NTFS or exFAT | Package Manager installs it. On FAT32, hold SELECT+SQUARE in webMAN and enable external game data before installing if the game should stay on the SSD. |
-| Numbered PKG parts (`.pkg.1`, `.pkg.001`, `.pkg.66600`) | Joined into that one file when the drive can hold it | Same install step. The parts are not left for you to join by hand. |
+| Numbered PKG parts (`.pkg.1`, `.pkg.001`, `.pkg.66600`, `name_1.pkg`) | Joined into that one file when the drive can hold it | Same install step. Pieces already on the drive are offered as a merge. The parts are not left for you to join by hand. |
 
 An extracted package is the PKG layout webMAN mounts directly. A `.pkg` file, even after the parts are joined, is still an installer.
 
@@ -34,7 +34,8 @@ A file inside an extracted package that is over 4 GB is refused on FAT32 for the
 
 - **Transfer** queues ISOs, PKG parts, folder games, and extracted packages. Each row says where the files will go and how to start the game.
 - **On the drive** lists what is already in the PS3 folders. Removing an entry deletes only those files, after a confirmation.
-- **Join splits** rebuilds one file from `.iso.0`, `.pkg.1`, or `.66600` pieces onto a disk that can hold it.
+- **Join splits** rebuilds one file from `.iso.0`, `.pkg.1`, `name_1.pkg`, or `.66600` pieces onto a disk that can hold it.
+- **On the drive** recognizes `name_1.pkg`, `name_2.pkg`, and the rest as one package and offers to merge them. A result that fits is one file in `\packages` or `\PKG`. A larger package on FAT32 is stored as `.pkg.66600` parts so multiMAN can install it.
 - A stopped copy can be resumed. The resume record stays in `%AppData%\PS3TransferSuite`, not on the USB drive.
 - Verify CRC is off unless you turn it on. Extra split pieces can be marked hidden so Explorer shows the first one.
 

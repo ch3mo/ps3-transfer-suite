@@ -7,7 +7,9 @@ public sealed record LibraryEntry(
     int Parts,
     bool Split,
     string RelativePath,
-    IReadOnlyList<string> Files);
+    IReadOnlyList<string> Files,
+    bool OfferMerge = false,
+    string? Note = null);
 
 public static class LibraryCatalog
 {
@@ -30,6 +32,7 @@ public static class LibraryCatalog
         }
 
         entries.AddRange(ScanLooseRoms(driveRoot, entries));
+        entries.AddRange(ScanStrayPkgParts(driveRoot, entries));
 
         entries.Sort((a, b) =>
         {
@@ -194,10 +197,32 @@ public static class LibraryCatalog
     private static IEnumerable<LibraryEntry> ScanLoose(string driveRoot, string folder, string category, bool license)
     {
         var files = SafeFiles(folder);
+        var claimed = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var set in PkgParts.Group(files))
+        {
+            foreach (var file in set.Files)
+                claimed.Add(file);
+            long setBytes = 0;
+            foreach (var file in set.Files)
+                setBytes += new FileInfo(file).Length;
+            yield return new LibraryEntry(
+                Path.GetFileNameWithoutExtension(set.BaseName),
+                category,
+                setBytes,
+                set.Files.Count,
+                true,
+                PathUtil.Relative(driveRoot, set.Files[0]),
+                set.Files,
+                set.Complete,
+                set.Note);
+        }
+
         var groups = new Dictionary<string, List<(int Order, string Path)>>(StringComparer.OrdinalIgnoreCase);
         var singles = new List<string>();
         foreach (var file in files)
         {
+            if (claimed.Contains(file))
+                continue;
             var name = Path.GetFileName(file);
             if (SplitNames.IsJunk(name))
                 continue;
@@ -243,6 +268,88 @@ public static class LibraryCatalog
                 false,
                 PathUtil.Relative(driveRoot, file),
                 [file]);
+        }
+    }
+
+    private static IEnumerable<LibraryEntry> ScanStrayPkgParts(string driveRoot, List<LibraryEntry> already)
+    {
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var entry in already)
+        {
+            foreach (var file in entry.Files)
+                seen.Add(Path.GetFullPath(file));
+        }
+
+        List<string> pkgs;
+        try
+        {
+            pkgs = EnumeratePkgParts(driveRoot).Where(path => !seen.Contains(Path.GetFullPath(path))).ToList();
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            yield break;
+        }
+
+        foreach (var set in PkgParts.Group(pkgs))
+        {
+            long bytes = 0;
+            foreach (var file in set.Files)
+                bytes += new FileInfo(file).Length;
+            var parent = Path.GetDirectoryName(PathUtil.Relative(driveRoot, set.Files[0]));
+            var category = string.IsNullOrEmpty(parent) ? "Split PKG" : parent;
+            yield return new LibraryEntry(
+                Path.GetFileNameWithoutExtension(set.BaseName),
+                category,
+                bytes,
+                set.Files.Count,
+                true,
+                PathUtil.Relative(driveRoot, set.Files[0]),
+                set.Files,
+                set.Complete,
+                set.Note);
+        }
+    }
+
+    private static IEnumerable<string> EnumeratePkgParts(string root)
+    {
+        var stack = new Stack<string>();
+        stack.Push(root);
+        while (stack.Count > 0)
+        {
+            var directory = stack.Pop();
+            IEnumerable<string> children;
+            try
+            {
+                children = Directory.EnumerateFileSystemEntries(directory);
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                continue;
+            }
+
+            foreach (var child in children)
+            {
+                if (IsReparse(child))
+                    continue;
+                var name = Path.GetFileName(child);
+                if (SplitNames.IsJunk(name) || name.StartsWith('.'))
+                    continue;
+                if (name.Equals("$RECYCLE.BIN", StringComparison.OrdinalIgnoreCase)
+                    || name.Equals("System Volume Information", StringComparison.OrdinalIgnoreCase)
+                    || name.Equals("RECYCLER", StringComparison.OrdinalIgnoreCase))
+                    continue;
+                if (Directory.Exists(child))
+                {
+                    if (directory.Equals(root, StringComparison.OrdinalIgnoreCase)
+                        && Ps3Layout.LibraryFolders.Contains(name, StringComparer.OrdinalIgnoreCase))
+                        continue;
+                    stack.Push(child);
+                    continue;
+                }
+
+                if (PkgParts.TryParse(name, out _, out _))
+                    yield return child;
+            }
         }
     }
 

@@ -370,8 +370,16 @@
                 <Setter TargetName="Row" Property="Background" Value="{StaticResource CardBrush}"/>
               </Trigger>
               <Trigger Property="IsSelected" Value="True">
-                <Setter TargetName="Row" Property="Background" Value="{StaticResource CardBrush}"/>
+                <Setter TargetName="Row" Property="Background" Value="#1A3348"/>
+                <Setter TargetName="Row" Property="BorderBrush" Value="{StaticResource AccentBrush}"/>
               </Trigger>
+              <MultiTrigger>
+                <MultiTrigger.Conditions>
+                  <Condition Property="IsSelected" Value="True"/>
+                  <Condition Property="IsMouseOver" Value="True"/>
+                </MultiTrigger.Conditions>
+                <Setter TargetName="Row" Property="Background" Value="#21425C"/>
+              </MultiTrigger>
             </ControlTemplate.Triggers>
           </ControlTemplate>
         </Setter.Value>
