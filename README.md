@@ -4,7 +4,7 @@
 
 Copies games from a Windows PC onto a USB drive so a jailbroken PS3 can use them. The console needs custom firmware or HEN, plus webMAN MOD. This app only fills the drive. It does not modify the PS3, and it never formats a disk.
 
-FAT32 cannot store a file over 4 GB, including on a 250 GB stick. Files that webMAN can mount are split at 4,294,901,760 bytes (`0xFFFF0000`), the same size splitps3iso uses.
+FAT32 cannot store a file over 4 GB. Files that webMAN can mount are split at 4,294,901,760 bytes (`0xFFFF0000`), the same size splitps3iso uses.
 
 ## What plays from the SSD
 
