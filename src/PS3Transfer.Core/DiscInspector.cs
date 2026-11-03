@@ -7,9 +7,10 @@ public static class DiscInspector
 {
     public static InspectedSource Inspect(DiscoveredGroup group)
     {
+        InspectedSource source;
         try
         {
-            return group.Mode switch
+            source = group.Mode switch
             {
                 DiscoveryMode.JbFolder => InspectFolder(group),
                 DiscoveryMode.PkgFolder => InspectPkgFolder(group),
@@ -19,8 +20,11 @@ public static class DiscInspector
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
-            return Failed(group, ex.Message);
+            source = Failed(group, ex.Message);
         }
+
+        source.ExtractRoot = group.ExtractRoot;
+        return source;
     }
 
     public static long StampOf(IEnumerable<string> files)

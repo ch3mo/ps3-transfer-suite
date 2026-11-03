@@ -8,6 +8,11 @@ public sealed class AppSettings
     public bool HideExtraParts { get; set; } = true;
     public bool UseTitleNames { get; set; } = true;
     public string? LastDriveRoot { get; set; }
+    public double? WindowLeft { get; set; }
+    public double? WindowTop { get; set; }
+    public double? WindowWidth { get; set; }
+    public double? WindowHeight { get; set; }
+    public bool WindowMaximized { get; set; }
 }
 
 public static class SettingsStore

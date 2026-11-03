@@ -13,7 +13,8 @@ public sealed record DiscoveredGroup(
     string Label,
     IReadOnlyList<string> Files,
     string? Note,
-    bool Incomplete);
+    bool Incomplete,
+    string? ExtractRoot = null);
 
 public sealed class DiscoveryResult
 {
@@ -25,11 +26,7 @@ public static class SourceDiscovery
 {
     public static DiscoveryResult Collect(IEnumerable<string> inputs)
     {
-        var notes = new List<string>();
-        var files = new List<string>();
-        var folders = new List<string>();
-        var pkgFolders = new List<string>();
-        var explicitFiles = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var bag = new Bag();
 
         foreach (var raw in inputs)
         {
@@ -42,7 +39,7 @@ public static class SourceDiscovery
             }
             catch (Exception ex) when (ex is IOException or ArgumentException or NotSupportedException)
             {
-                notes.Add("Could not use " + raw + ". " + ex.Message);
+                bag.Notes.Add("Could not use " + raw + ". " + ex.Message);
                 continue;
             }
 
@@ -50,30 +47,29 @@ public static class SourceDiscovery
             {
                 if (IsDriveRoot(full))
                 {
-                    notes.Add("Add the folder that contains the games, not the whole " + full + " drive.");
+                    bag.Notes.Add("Add the folder that contains the games, not the whole " + full + " drive.");
                     continue;
                 }
 
-                Expand(full, files, folders, pkgFolders, notes);
+                Expand(full, bag);
             }
             else if (File.Exists(full))
             {
-                files.Add(full);
-                explicitFiles.Add(full);
+                TakeFile(full, bag, explicitFile: true);
             }
             else
             {
-                notes.Add("Nothing found at " + full + ".");
+                bag.Notes.Add("Nothing found at " + full + ".");
             }
         }
 
         var groups = new List<DiscoveredGroup>();
-        foreach (var folder in Distinct(folders))
-            groups.Add(new DiscoveredGroup(DiscoveryMode.JbFolder, folder, [folder], null, false));
-        foreach (var folder in Distinct(pkgFolders))
-            groups.Add(new DiscoveredGroup(DiscoveryMode.PkgFolder, folder, [folder], null, false));
+        foreach (var folder in Distinct(bag.Folders))
+            groups.Add(Make(DiscoveryMode.JbFolder, folder, [folder], null, false, bag));
+        foreach (var folder in Distinct(bag.PkgFolders))
+            groups.Add(Make(DiscoveryMode.PkgFolder, folder, [folder], null, false, bag));
 
-        groups.AddRange(GroupFiles(Distinct(files), explicitFiles, notes));
+        groups.AddRange(GroupFiles(Distinct(bag.Files), bag.Explicit, bag.Notes, bag));
 
         var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         var unique = new List<DiscoveredGroup>();
@@ -84,22 +80,90 @@ public static class SourceDiscovery
                 unique.Add(group);
         }
 
-        return new DiscoveryResult { Groups = unique, Notes = notes };
+        foreach (var root in bag.Extracted)
+        {
+            var used = false;
+            foreach (var group in unique)
+            {
+                if (string.Equals(group.ExtractRoot, root, StringComparison.OrdinalIgnoreCase))
+                {
+                    used = true;
+                    break;
+                }
+            }
+
+            if (!used)
+                TryDelete(root);
+        }
+
+        return new DiscoveryResult { Groups = unique, Notes = bag.Notes };
     }
 
-    private static void Expand(string directory, List<string> files, List<string> folders, List<string> pkgFolders, List<string> notes)
+    private static void TakeFile(string full, Bag bag, bool explicitFile)
+    {
+        if (GameArchive.IsArchive(full))
+        {
+            IngestArchive(full, bag);
+            return;
+        }
+
+        bag.AddFile(full, explicitFile);
+    }
+
+    private static void IngestArchive(string archive, Bag bag)
+    {
+        var name = Path.GetFileName(archive);
+        if (bag.Depth >= 3)
+        {
+            bag.Notes.Add(name + " is nested too deep to extract.");
+            return;
+        }
+
+        var root = Path.Combine(Path.GetTempPath(), "PS3TransferSuite", Guid.NewGuid().ToString("N"));
+        var dest = Path.Combine(root, FatName.Folder(Path.GetFileNameWithoutExtension(archive), null));
+        if (!GameArchive.TryExtract(archive, dest, out var error))
+        {
+            bag.Notes.Add(name + " was not extracted. " + (error ?? "The archive could not be read."));
+            TryDelete(root);
+            return;
+        }
+
+        bag.Extracted.Add(root);
+        var filesBefore = bag.Files.Count;
+        var foldersBefore = bag.Folders.Count;
+        var pkgBefore = bag.PkgFolders.Count;
+        var nested = new Bag
+        {
+            Notes = bag.Notes,
+            Files = bag.Files,
+            Folders = bag.Folders,
+            PkgFolders = bag.PkgFolders,
+            Explicit = bag.Explicit,
+            Roots = bag.Roots,
+            Extracted = bag.Extracted,
+            ExtractRoot = root,
+            Depth = bag.Depth + 1,
+        };
+        Expand(dest, nested);
+        if (bag.Files.Count == filesBefore && bag.Folders.Count == foldersBefore && bag.PkgFolders.Count == pkgBefore)
+            bag.Notes.Add(name + " does not contain a game. The archive was not added.");
+        else
+            bag.Notes.Add("Extracted " + name + ". The game inside is queued, not the archive folder.");
+    }
+
+    private static void Expand(string directory, Bag bag)
     {
         if (IsReparse(directory))
             return;
         if (IsJbFolder(directory))
         {
-            folders.Add(directory);
+            bag.AddFolder(bag.Folders, directory);
             return;
         }
 
         if (IsPkgFolder(directory))
         {
-            pkgFolders.Add(directory);
+            bag.AddFolder(bag.PkgFolders, directory);
             return;
         }
 
@@ -110,7 +174,7 @@ public static class SourceDiscovery
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
-            notes.Add("Could not read " + directory + ". " + ex.Message);
+            bag.Notes.Add("Could not read " + directory + ". " + ex.Message);
             return;
         }
 
@@ -119,16 +183,19 @@ public static class SourceDiscovery
             if (IsReparse(child))
                 continue;
             if (Directory.Exists(child))
-                Expand(child, files, folders, pkgFolders, notes);
+                Expand(child, bag);
+            else if (GameArchive.IsArchive(child))
+                IngestArchive(child, bag);
             else if (SplitNames.IsCandidateName(Path.GetFileName(child)))
-                files.Add(child);
+                bag.AddFile(child, explicitFile: false);
         }
     }
 
     private static List<DiscoveredGroup> GroupFiles(
         IReadOnlyList<string> files,
         HashSet<string> explicitFiles,
-        List<string> notes)
+        List<string> notes,
+        Bag bag)
     {
         var consumed = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         var groups = new List<DiscoveredGroup>();
@@ -225,7 +292,7 @@ public static class SourceDiscovery
             if (incomplete && note is not null)
                 notes.Add(note);
 
-            groups.Add(new DiscoveredGroup(DiscoveryMode.LogicalParts, baseName, paths, note, incomplete));
+            groups.Add(Make(DiscoveryMode.LogicalParts, baseName, paths, note, incomplete, bag));
         }
 
         foreach (var file in files)
@@ -276,7 +343,7 @@ public static class SourceDiscovery
                 notes.Add(Path.GetFileName(file) + ": " + note);
             }
 
-            groups.Add(new DiscoveredGroup(DiscoveryMode.FileSet, file, set, note, missing.Count > 0));
+            groups.Add(Make(DiscoveryMode.FileSet, file, set, note, missing.Count > 0, bag));
         }
 
         foreach (var file in files)
@@ -291,7 +358,7 @@ public static class SourceDiscovery
                 {
                     consumed.Add(file);
                     consumed.Add(mds);
-                    groups.Add(new DiscoveredGroup(DiscoveryMode.FileSet, file, [file, mds], null, false));
+                    groups.Add(Make(DiscoveryMode.FileSet, file, [file, mds], null, false, bag));
                     continue;
                 }
             }
@@ -307,15 +374,69 @@ public static class SourceDiscovery
                 continue;
 
             consumed.Add(file);
-            groups.Add(new DiscoveredGroup(
+            groups.Add(Make(
                 DiscoveryMode.LogicalParts,
                 Path.GetFileName(file),
                 [file],
                 null,
-                false));
+                false,
+                bag));
         }
 
         return groups;
+    }
+
+    private static DiscoveredGroup Make(
+        DiscoveryMode mode,
+        string label,
+        IReadOnlyList<string> files,
+        string? note,
+        bool incomplete,
+        Bag bag)
+    {
+        bag.Roots.TryGetValue(files[0], out var root);
+        return new DiscoveredGroup(mode, label, files, note, incomplete, root);
+    }
+
+    private static void TryDelete(string directory)
+    {
+        try
+        {
+            if (Directory.Exists(directory))
+                Directory.Delete(directory, recursive: true);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+        }
+    }
+
+    private sealed class Bag
+    {
+        public List<string> Notes { get; init; } = [];
+        public List<string> Files { get; init; } = [];
+        public List<string> Folders { get; init; } = [];
+        public List<string> PkgFolders { get; init; } = [];
+        public HashSet<string> Explicit { get; init; } = new(StringComparer.OrdinalIgnoreCase);
+        public Dictionary<string, string> Roots { get; init; } = new(StringComparer.OrdinalIgnoreCase);
+        public List<string> Extracted { get; init; } = [];
+        public string? ExtractRoot { get; init; }
+        public int Depth { get; init; }
+
+        public void AddFile(string path, bool explicitFile)
+        {
+            Files.Add(path);
+            if (explicitFile)
+                Explicit.Add(path);
+            if (ExtractRoot is not null)
+                Roots[path] = ExtractRoot;
+        }
+
+        public void AddFolder(List<string> list, string path)
+        {
+            list.Add(path);
+            if (ExtractRoot is not null)
+                Roots[path] = ExtractRoot;
+        }
     }
 
     private static IEnumerable<string> CueSheetNames(string text)

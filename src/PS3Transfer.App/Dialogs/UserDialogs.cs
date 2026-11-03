@@ -30,7 +30,7 @@ public sealed class WindowDialogs : IUserDialogs
         var dialog = new OpenFileDialog
         {
             Title = "Add ISOs, PKGs, or package parts",
-            Filter = "PS3 and ROM files|*.iso;*.pkg;*.rap;*.edat;*.cue;*.bin;*.mdf;*.mds;*.img;*.nes;*.fds;*.sfc;*.smc;*.gb;*.gbc;*.gba;*.md;*.gen;*.smd;*.sms;*.gg;*.32x;*.pce;*.ngp;*.ngc;*.a26;*.a78;*.lnx;*.n64;*.z64;*.v64;*.nds;*.zip;*.7z;*.wad;*.adf|All files|*.*",
+            Filter = "PS3 and ROM files|*.iso;*.pkg;*.rap;*.edat;*.cue;*.bin;*.mdf;*.mds;*.img;*.nes;*.fds;*.sfc;*.smc;*.gb;*.gbc;*.gba;*.md;*.gen;*.smd;*.sms;*.gg;*.32x;*.pce;*.ngp;*.ngc;*.a26;*.a78;*.lnx;*.n64;*.z64;*.v64;*.nds;*.zip;*.7z;*.rar;*.wad;*.adf|All files|*.*",
             Multiselect = true,
         };
         return dialog.ShowDialog(_owner) == true ? dialog.FileNames : null;

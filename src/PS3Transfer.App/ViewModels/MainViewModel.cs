@@ -15,10 +15,15 @@ public sealed class MainViewModel : ObservableObject
     private readonly AppSettings _settings;
     private readonly ManifestStore _manifests;
     private readonly DispatcherTimer _driveTimer;
-    private CancellationTokenSource? _run;
+    private CancellationTokenSource? _copies;
+    private CancellationTokenSource? _joinRun;
     private bool _closeAfterStop;
+    private int _activeCopies;
+    private int _waveFailures;
+    private bool _waveCanceled;
+    private string? _waveFragment;
     private long _runTotal;
-    private long _runDone;
+    private long _settledBytes;
     private DateTime _runStart;
     private DriveRow? _selectedDrive;
     private QueueItemViewModel? _selectedItem;
@@ -27,6 +32,7 @@ public sealed class MainViewModel : ObservableObject
     private bool _transferring;
     private bool _joining;
     private bool _adding;
+    private int _addDepth;
     private bool _verifyCrc;
     private bool _hideExtraParts;
     private bool _useTitleNames;
@@ -58,12 +64,12 @@ public sealed class MainViewModel : ObservableObject
             RefreshDrives(keepSelection: true);
         };
 
-        AddFilesCommand = new RelayCommand(AddFiles, () => CanEdit);
-        AddFolderCommand = new RelayCommand(AddFolder, () => CanEdit);
-        RemoveCommand = new RelayCommand(RemoveSelected, () => CanEdit && SelectedItem is not null);
+        AddFilesCommand = new RelayCommand(AddFiles);
+        AddFolderCommand = new RelayCommand(AddFolder);
+        RemoveCommand = new RelayCommand(RemoveSelected, () => SelectedItem is { IsRunning: false });
         StartCommand = new RelayCommand(Start, () => CanStart());
         StopCommand = new RelayCommand(Stop, () => Transferring || Joining);
-        ReplaceCommand = new RelayCommand<QueueItemViewModel>(Replace, item => CanEdit && item is { ShowReplace: true });
+        ReplaceCommand = new RelayCommand<QueueItemViewModel>(Replace, item => item is { IsRunning: false, ShowReplace: true });
         SelectDriveCommand = new RelayCommand<DriveRow>(SelectDrive, _ => CanEdit);
         EjectCommand = new RelayCommand(Eject, () => CanEdit && SelectedDrive is { Verdict: not DriveVerdict.Blocked });
         RefreshCommand = new RelayCommand(Refresh, () => CanEdit);
@@ -72,8 +78,8 @@ public sealed class MainViewModel : ObservableObject
         ShowJoinCommand = new RelayCommand(() => Tab = 2);
         DeleteLibraryCommand = new RelayCommand(DeleteLibrary, () => CanEdit && SelectedLibrary is not null);
         OrganizeRomsCommand = new RelayCommand(() => _ = OrganizeAsync(), () => CanEdit && SelectedDrive is { Verdict: not DriveVerdict.Blocked });
-        PickJoinCommand = new RelayCommand(PickJoin, () => CanEdit);
-        JoinCommand = new RelayCommand(StartJoin, () => CanEdit && _joinFiles.Count > 0);
+        PickJoinCommand = new RelayCommand(PickJoin, () => !_joining);
+        JoinCommand = new RelayCommand(StartJoin, () => !_joining && _joinFiles.Count > 0);
 
         RefreshDrives(keepSelection: false);
     }
@@ -256,10 +262,33 @@ public sealed class MainViewModel : ObservableObject
         if (!_dialogs.Confirm("Stop the transfer?", "A copy is still running. Stop it and close? Finished bytes stay on the drive and can be resumed."))
             return;
         _closeAfterStop = true;
-        _run?.Cancel();
+        _copies?.Cancel();
+        _joinRun?.Cancel();
     }
 
     public void SaveSettings() => SettingsStore.Save(_settings);
+
+    public bool TryReadPlacement(out double left, out double top, out double width, out double height, out bool maximized)
+    {
+        left = _settings.WindowLeft ?? 0;
+        top = _settings.WindowTop ?? 0;
+        width = _settings.WindowWidth ?? 0;
+        height = _settings.WindowHeight ?? 0;
+        maximized = _settings.WindowMaximized;
+        return _settings.WindowLeft is not null
+            && _settings.WindowTop is not null
+            && _settings.WindowWidth is >= 200
+            && _settings.WindowHeight is >= 200;
+    }
+
+    public void WritePlacement(double left, double top, double width, double height, bool maximized)
+    {
+        _settings.WindowLeft = left;
+        _settings.WindowTop = top;
+        _settings.WindowWidth = width;
+        _settings.WindowHeight = height;
+        _settings.WindowMaximized = maximized;
+    }
 
     public Task AddPathsAsync(IEnumerable<string> paths) => AddAsync(paths);
 
@@ -279,14 +308,23 @@ public sealed class MainViewModel : ObservableObject
 
     private async Task AddAsync(IEnumerable<string> paths)
     {
-        if (!CanEdit)
-            return;
         var list = paths.Distinct(StringComparer.OrdinalIgnoreCase).ToList();
         if (list.Count == 0)
             return;
+        _addDepth++;
         _adding = true;
         RaiseBusy();
-        Status = "Reading the files…";
+        var extracting = false;
+        foreach (var path in list)
+        {
+            if (path.EndsWith(".7z", StringComparison.OrdinalIgnoreCase) || path.EndsWith(".rar", StringComparison.OrdinalIgnoreCase))
+            {
+                extracting = true;
+                break;
+            }
+        }
+
+        Status = extracting ? "Extracting the archive…" : "Reading the files…";
         try
         {
             var result = await Task.Run(() => SourceDiscovery.Collect(list));
@@ -318,23 +356,26 @@ public sealed class MainViewModel : ObservableObject
         }
         finally
         {
-            _adding = false;
+            _addDepth = Math.Max(0, _addDepth - 1);
+            _adding = _addDepth > 0;
             RaiseBusy();
         }
     }
 
     private void RemoveSelected()
     {
-        if (!CanEdit || SelectedItem is null)
+        if (SelectedItem is null || SelectedItem.IsRunning)
             return;
-        Queue.Remove(SelectedItem);
+        var item = SelectedItem;
+        Queue.Remove(item);
         SelectedItem = null;
+        ReleaseExtract(item, stillQueued: false);
         Replan();
     }
 
     private void Replace(QueueItemViewModel? item)
     {
-        if (!CanEdit || item is null || !item.ShowReplace)
+        if (item is null || item.IsRunning || !item.ShowReplace)
             return;
         if (!_dialogs.Confirm("Replace the files on the drive?", item.Title + " will be copied again. The existing files with that name will be deleted."))
             return;
@@ -348,8 +389,22 @@ public sealed class MainViewModel : ObservableObject
         if (!CanStart() || _selectedDrive is null)
             return;
         var drive = _selectedDrive;
-        if (drive.Verdict == DriveVerdict.Caution
+        if (_activeCopies == 0
+            && drive.Verdict == DriveVerdict.Caution
             && !_dialogs.Confirm("Copy to this drive?", drive.Reason))
+            return;
+
+        Replan();
+        var pending = new List<(QueueItemViewModel Item, TransferPlan Plan)>();
+        foreach (var item in Queue)
+        {
+            if (item.IsRunning || item.Plan is not { } plan)
+                continue;
+            if (plan.Action is TransferAction.Copy or TransferAction.Resume or TransferAction.Replace)
+                pending.Add((item, plan));
+        }
+
+        if (pending.Count == 0)
             return;
 
         long free;
@@ -363,120 +418,173 @@ public sealed class MainViewModel : ObservableObject
             return;
         }
 
-        var need = Queue.Sum(item => item.Plan?.BytesToWrite ?? 0);
+        var need = pending.Sum(entry => entry.Plan.BytesToWrite);
         if (need > free - SpaceMargin)
         {
             Status = "Not enough free space. This queue writes " + ByteSize.Format(need) + " and the drive has " + ByteSize.Format(free) + " free.";
             return;
         }
 
-        _transferring = true;
-        _run = new CancellationTokenSource();
-        _runTotal = need;
-        _runDone = 0;
-        _runStart = DateTime.UtcNow;
-        OverallFraction = 0;
-        OverallDetail = "";
+        if (_activeCopies == 0)
+        {
+            _waveFailures = 0;
+            _waveCanceled = false;
+            _waveFragment = null;
+            _settledBytes = 0;
+            _runTotal = 0;
+            _runStart = DateTime.UtcNow;
+            OverallFraction = 0;
+            OverallDetail = "";
+            _copies?.Dispose();
+            _copies = new CancellationTokenSource();
+        }
+
+        _runTotal += need;
+        var token = _copies!.Token;
+        foreach (var (item, plan) in pending)
+        {
+            item.BeginRun();
+            _activeCopies++;
+            _transferring = true;
+            _ = CopyOneAsync(item, plan, token);
+        }
+
+        Status = _activeCopies == 1 ? "Copying 1 item." : "Copying " + _activeCopies + " items.";
         RaiseBusy();
-        var token = _run.Token;
-        var failures = 0;
-        var canceled = false;
-        string? fragmented = null;
-        try
-        {
-            foreach (var item in Queue.ToList())
-            {
-                if (token.IsCancellationRequested)
-                {
-                    canceled = true;
-                    break;
-                }
-
-                Replan();
-                var plan = item.Plan;
-                if (plan is null || plan.Action is TransferAction.Skip or TransferAction.Blocked)
-                    continue;
-                var options = new TransferOptions
-                {
-                    VerifyCrc32 = VerifyCrc,
-                    HideExtraParts = HideExtraParts,
-                    Manifests = _manifests,
-                };
-                var progress = new UiProgress(_dispatcher, value =>
-                {
-                    item.Report(value);
-                    var done = _runDone + value.SessionBytes;
-                    ShowOverall(done, value.Detail);
-                });
-                TransferResult result;
-                try
-                {
-                    result = await TransferEngine.CopyAsync(plan, options, progress, token);
-                }
-                catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
-                {
-                    AppLog.Write(ex.ToString());
-                    item.Fail(ex.Message);
-                    failures++;
-                    Replan();
-                    continue;
-                }
-
-                _runDone += result.BytesWritten;
-                AppLog.Write(item.Title + " " + result.Outcome + " " + (result.Error ?? result.Warning ?? ""));
-                if (result.Outcome == TransferOutcome.Canceled)
-                {
-                    canceled = true;
-                    break;
-                }
-
-                if (result.Outcome == TransferOutcome.Failed)
-                {
-                    item.Fail(result.Error ?? "The copy failed.");
-                    failures++;
-                }
-                else if (result.Outcome == TransferOutcome.Copied)
-                {
-                    var warning = FragmentWarning(plan);
-                    item.ClearSticky();
-                    if (warning is not null)
-                    {
-                        fragmented = warning;
-                        item.Warn(warning);
-                    }
-                }
-
-                Replan();
-            }
-        }
-        finally
-        {
-            _transferring = false;
-            _run.Dispose();
-            _run = null;
-            RaiseBusy();
-            RefreshDrives(keepSelection: true);
-        }
-
-        if (_closeAfterStop)
-        {
-            CloseRequested?.Invoke();
-            return;
-        }
-
-        if (canceled)
-            Status = "Stopped. What landed on the drive can be resumed.";
-        else if (failures == 1)
-            Status = "1 item needs attention. The rest were copied.";
-        else if (failures > 1)
-            Status = failures + " items need attention. The rest were copied.";
-        else
-            Status = fragmented ?? "Finished. Plug the drive into the PS3.";
-        if (!canceled && failures == 0)
-            OverallFraction = 1;
+        await Task.CompletedTask;
     }
 
-    private void Stop() => _run?.Cancel();
+    private async Task CopyOneAsync(QueueItemViewModel item, TransferPlan plan, CancellationToken token)
+    {
+        var options = new TransferOptions
+        {
+            VerifyCrc32 = VerifyCrc,
+            HideExtraParts = HideExtraParts,
+            Manifests = _manifests,
+        };
+        var progress = new UiProgress(_dispatcher, value =>
+        {
+            item.Report(value);
+            ShowOverall(OverallDone(), value.Detail);
+        });
+        TransferResult result;
+        try
+        {
+            result = await TransferEngine.CopyAsync(plan, options, progress, token);
+        }
+        catch (Exception ex)
+        {
+            AppLog.Write(ex.ToString());
+            item.Fail(ex.Message);
+            result = new TransferResult(TransferOutcome.Failed, 0, ex.Message, null);
+        }
+
+        _settledBytes += result.BytesWritten;
+        AppLog.Write(item.Title + " " + result.Outcome + " " + (result.Error ?? result.Warning ?? ""));
+        if (result.Outcome == TransferOutcome.Canceled)
+            _waveCanceled = true;
+        else if (result.Outcome == TransferOutcome.Failed)
+        {
+            if (item.Tone != "Bad")
+                item.Fail(result.Error ?? "The copy failed.");
+            _waveFailures++;
+        }
+        else if (result.Outcome == TransferOutcome.Copied)
+        {
+            var warning = FragmentWarning(plan);
+            item.ClearSticky();
+            if (warning is not null)
+            {
+                _waveFragment = warning;
+                item.Warn(warning);
+            }
+
+            ReleaseExtract(item, stillQueued: true);
+        }
+        else if (result.Outcome == TransferOutcome.Skipped)
+        {
+            ReleaseExtract(item, stillQueued: true);
+        }
+
+        item.EndRun();
+        _activeCopies--;
+        if (_activeCopies < 0)
+            _activeCopies = 0;
+        _transferring = _activeCopies > 0;
+        ShowOverall(OverallDone(), item.Title);
+        if (_activeCopies == 0)
+        {
+            _copies?.Dispose();
+            _copies = null;
+            if (_closeAfterStop)
+            {
+                RaiseBusy();
+                CloseRequested?.Invoke();
+                return;
+            }
+
+            if (_waveCanceled)
+                Status = "Stopped. What landed on the drive can be resumed.";
+            else if (_waveFailures == 1)
+                Status = "1 item needs attention. The rest were copied.";
+            else if (_waveFailures > 1)
+                Status = _waveFailures + " items need attention. The rest were copied.";
+            else
+                Status = _waveFragment ?? "Finished. Plug the drive into the PS3.";
+            if (!_waveCanceled && _waveFailures == 0)
+                OverallFraction = 1;
+            RefreshDrives(keepSelection: true);
+        }
+        else
+        {
+            Status = _activeCopies == 1 ? "Copying 1 item." : "Copying " + _activeCopies + " items.";
+        }
+
+        Replan();
+        RaiseBusy();
+    }
+
+    private void Stop()
+    {
+        _copies?.Cancel();
+        _joinRun?.Cancel();
+    }
+
+    private long OverallDone()
+    {
+        var done = _settledBytes;
+        foreach (var item in Queue)
+        {
+            if (item.IsRunning)
+                done += item.SessionBytes;
+        }
+
+        return done;
+    }
+
+    private void ReleaseExtract(QueueItemViewModel item, bool stillQueued)
+    {
+        var root = item.Source.ExtractRoot;
+        if (string.IsNullOrEmpty(root))
+            return;
+        foreach (var other in Queue)
+        {
+            if (stillQueued && ReferenceEquals(other, item))
+                continue;
+            if (string.Equals(other.Source.ExtractRoot, root, StringComparison.OrdinalIgnoreCase))
+                return;
+        }
+
+        try
+        {
+            if (Directory.Exists(root))
+                Directory.Delete(root, recursive: true);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            AppLog.Write("Could not remove the extracted archive. " + ex.Message);
+        }
+    }
 
     private void Replan()
     {
@@ -484,6 +592,15 @@ public sealed class MainViewModel : ObservableObject
         var reserved = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         foreach (var item in Queue)
         {
+            if (item.IsRunning && item.Plan is { } running)
+            {
+                foreach (var path in running.OutputPaths)
+                    reserved.Add(path);
+                foreach (var copy in running.Copies)
+                    reserved.Add(copy.DestinationBase);
+                continue;
+            }
+
             if (drive is null || drive.Verdict == DriveVerdict.Blocked)
             {
                 item.Hold(drive is null ? "Choose a USB drive." : drive.Reason);
@@ -569,12 +686,14 @@ public sealed class MainViewModel : ObservableObject
 
     private bool CanStart()
     {
-        if (!CanEdit || _selectedDrive is null || _selectedDrive.Verdict == DriveVerdict.Blocked)
+        if (_selectedDrive is null || _selectedDrive.Verdict == DriveVerdict.Blocked)
             return false;
         long need = 0;
         var any = false;
         foreach (var item in Queue)
         {
+            if (item.IsRunning)
+                continue;
             if (item.Plan?.Action is TransferAction.Copy or TransferAction.Resume or TransferAction.Replace)
             {
                 any = true;
@@ -620,7 +739,7 @@ public sealed class MainViewModel : ObservableObject
         {
             if (match is null)
             {
-                _run?.Cancel();
+                _copies?.Cancel();
                 Status = "The drive was disconnected. The copy stopped and can be resumed.";
                 ApplySelection(null, replan: false);
             }
@@ -796,7 +915,7 @@ public sealed class MainViewModel : ObservableObject
         }
         finally
         {
-            _adding = false;
+            _adding = _addDepth > 0;
             RaiseBusy();
         }
     }
@@ -835,7 +954,7 @@ public sealed class MainViewModel : ObservableObject
 
     private async Task JoinAsync()
     {
-        if (!CanEdit || _joinFiles.Count == 0)
+        if (_joining || _joinFiles.Count == 0)
             return;
         var suggested = "joined.bin";
         if (SplitNames.TryParse(Path.GetFileName(_joinFiles[0]), out var baseName, out _, out _))
@@ -889,7 +1008,7 @@ public sealed class MainViewModel : ObservableObject
         }
 
         _joining = true;
-        _run = new CancellationTokenSource();
+        _joinRun = new CancellationTokenSource();
         RaiseBusy();
         JoinFraction = 0;
         var progress = new UiProgress(_dispatcher, value =>
@@ -899,7 +1018,7 @@ public sealed class MainViewModel : ObservableObject
         });
         try
         {
-            var result = await FileJoiner.JoinAsync(_joinFiles, output, fileSystem, VerifyCrc, progress, _run.Token);
+            var result = await FileJoiner.JoinAsync(_joinFiles, output, fileSystem, VerifyCrc, progress, _joinRun.Token);
             JoinStatus = result.Outcome switch
             {
                 TransferOutcome.Copied => "Joined file saved. " + output,
@@ -917,10 +1036,10 @@ public sealed class MainViewModel : ObservableObject
         finally
         {
             _joining = false;
-            _run.Dispose();
-            _run = null;
+            _joinRun?.Dispose();
+            _joinRun = null;
             RaiseBusy();
-            if (_closeAfterStop)
+            if (_closeAfterStop && _activeCopies == 0)
                 CloseRequested?.Invoke();
         }
     }

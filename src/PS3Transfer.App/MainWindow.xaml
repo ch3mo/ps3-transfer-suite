@@ -5,6 +5,7 @@
         Title="PS3 Transfer Suite"
         Width="1120" Height="760"
         MinWidth="980" MinHeight="680"
+        WindowStartupLocation="CenterScreen"
         WindowStyle="None"
         ResizeMode="CanResize"
         Background="{StaticResource BgBrush}"
@@ -45,11 +46,11 @@
 
     <Border DockPanel.Dock="Top" BorderBrush="{StaticResource LineBrush}" BorderThickness="0,0,0,1" Padding="20,16">
       <StackPanel>
-        <ScrollViewer HorizontalScrollBarVisibility="Auto" VerticalScrollBarVisibility="Disabled">
-          <ItemsControl ItemsSource="{Binding Drives}">
+        <ScrollViewer x:Name="DriveScroll" HorizontalScrollBarVisibility="Disabled" VerticalScrollBarVisibility="Auto" MaxHeight="250">
+          <ItemsControl x:Name="DriveList" ItemsSource="{Binding Drives}">
             <ItemsControl.ItemsPanel>
               <ItemsPanelTemplate>
-                <StackPanel Orientation="Horizontal"/>
+                <WrapPanel Orientation="Horizontal"/>
               </ItemsPanelTemplate>
             </ItemsControl.ItemsPanel>
             <ItemsControl.ItemTemplate>
@@ -225,7 +226,7 @@
                     <DockPanel>
                       <ComboBox DockPanel.Dock="Right" Width="168" Margin="12,0,0,0"
                                 ItemsSource="{Binding KindOptions}" SelectedItem="{Binding SelectedKind}"
-                                DisplayMemberPath="Label" IsEnabled="{Binding DataContext.CanEdit, RelativeSource={RelativeSource AncestorType=Window}}"/>
+                                DisplayMemberPath="Label" IsEnabled="{Binding CanRetype}"/>
                       <Button DockPanel.Dock="Right" Content="Replace" Margin="12,0,0,0"
                               Command="{Binding DataContext.ReplaceCommand, RelativeSource={RelativeSource AncestorType=Window}}"
                               CommandParameter="{Binding}">
@@ -282,7 +283,7 @@
                 </Style>
               </StackPanel.Style>
               <TextBlock Text="Nothing queued" FontSize="22" FontWeight="SemiBold" FontFamily="Segoe UI" Foreground="{StaticResource TextBrush}" HorizontalAlignment="Center"/>
-              <TextBlock Text="Drop ISOs, PKG parts, ROMs, or an extracted package folder here." Margin="0,8,0,0" Foreground="{StaticResource MutedBrush}" TextAlignment="Center" TextWrapping="Wrap"/>
+              <TextBlock Text="Drop ISOs, PKG parts, ROMs, 7z or rar archives, or an extracted package folder here." Margin="0,8,0,0" Foreground="{StaticResource MutedBrush}" TextAlignment="Center" TextWrapping="Wrap"/>
             </StackPanel>
           </Grid>
         </DockPanel>

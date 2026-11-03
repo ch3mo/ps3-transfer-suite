@@ -26,4 +26,5 @@ public sealed class InspectedSource
     public IReadOnlyList<TreeFile> Tree { get; init; } = [];
     public bool AllowMemberSplit { get; init; }
     public long SourceStamp { get; init; }
+    public string? ExtractRoot { get; set; }
 }

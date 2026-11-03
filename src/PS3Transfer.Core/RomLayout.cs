@@ -67,7 +67,7 @@ public static class RomLayout
     public static bool IsRomName(string fileName)
     {
         var ext = Path.GetExtension(fileName);
-        if (ext.Equals(".zip", StringComparison.OrdinalIgnoreCase) || ext.Equals(".7z", StringComparison.OrdinalIgnoreCase))
+        if (ext.Equals(".zip", StringComparison.OrdinalIgnoreCase))
             return true;
         return ByExtension.ContainsKey(ext);
     }
@@ -82,7 +82,7 @@ public static class RomLayout
             return true;
         }
 
-        var archive = ext.Equals(".zip", StringComparison.OrdinalIgnoreCase) || ext.Equals(".7z", StringComparison.OrdinalIgnoreCase);
+        var archive = ext.Equals(".zip", StringComparison.OrdinalIgnoreCase);
         if (!archive && !AliasOf(directory, out _))
             return false;
 

@@ -39,6 +39,9 @@ public sealed class QueueItemViewModel : ObservableObject
     public IReadOnlyList<KindOption> KindOptions { get; }
     public TransferPlan? Plan => _plan;
     public bool Replace { get; private set; }
+    public bool IsRunning { get; private set; }
+    public long SessionBytes { get; private set; }
+    public bool CanRetype => !IsRunning;
 
     public KindOption SelectedKind
     {
@@ -104,8 +107,25 @@ public sealed class QueueItemViewModel : ObservableObject
         Raise(nameof(ShowReplace));
     }
 
+    public void BeginRun()
+    {
+        IsRunning = true;
+        SessionBytes = 0;
+        Raise(nameof(IsRunning));
+        Raise(nameof(CanRetype));
+    }
+
+    public void EndRun()
+    {
+        IsRunning = false;
+        SessionBytes = 0;
+        Raise(nameof(IsRunning));
+        Raise(nameof(CanRetype));
+    }
+
     public void Report(TransferProgress progress)
     {
+        SessionBytes = progress.SessionBytes;
         _status = progress.Detail;
         _tone = "Accent";
         _fraction = progress.FileLength <= 0 ? 0 : Math.Clamp((double)progress.FilePosition / progress.FileLength, 0, 1);
