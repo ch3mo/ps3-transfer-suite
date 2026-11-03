@@ -1,0 +1,361 @@
+<Window x:Class="PS3Transfer.App.MainWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:shell="clr-namespace:System.Windows.Shell;assembly=PresentationFramework"
+        Title="PS3 Transfer Suite"
+        Width="1120" Height="760"
+        MinWidth="980" MinHeight="680"
+        WindowStyle="None"
+        ResizeMode="CanResize"
+        Background="{StaticResource BgBrush}"
+        AllowDrop="True"
+        UseLayoutRounding="True"
+        SnapsToDevicePixels="True"
+        PreviewDragOver="OnDragOver"
+        Drop="OnDrop">
+  <shell:WindowChrome.WindowChrome>
+    <shell:WindowChrome CaptionHeight="53" ResizeBorderThickness="6" GlassFrameThickness="0" CornerRadius="0" UseAeroCaptionButtons="False"/>
+  </shell:WindowChrome.WindowChrome>
+  <Window.InputBindings>
+    <KeyBinding Key="O" Modifiers="Control" Command="{Binding AddFilesCommand}"/>
+    <KeyBinding Key="O" Modifiers="Control+Shift" Command="{Binding AddFolderCommand}"/>
+    <KeyBinding Key="F5" Command="{Binding RefreshCommand}"/>
+  </Window.InputBindings>
+
+  <DockPanel>
+    <Border DockPanel.Dock="Top" Height="53" Background="{StaticResource BgBrush}" BorderBrush="{StaticResource LineBrush}" BorderThickness="0,0,0,1">
+      <Grid>
+      <StackPanel Orientation="Horizontal" VerticalAlignment="Center" Margin="20,0,0,0">
+        <TextBlock Text="Transfer" VerticalAlignment="Center" FontFamily="Segoe UI" FontWeight="SemiBold" FontSize="16" Foreground="{StaticResource TextBrush}"/>
+        <TextBlock Text="  /  PS3" VerticalAlignment="Center" FontFamily="Segoe UI" Foreground="{StaticResource MutedBrush}" FontSize="16"/>
+      </StackPanel>
+      <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
+        <Button Click="Minimize" shell:WindowChrome.IsHitTestVisibleInChrome="True" Style="{StaticResource ChromeButton}">
+          <TextBlock FontFamily="Segoe MDL2 Assets" Text="&#xE921;" FontSize="11"/>
+        </Button>
+        <Button Click="ToggleMax" shell:WindowChrome.IsHitTestVisibleInChrome="True" Style="{StaticResource ChromeButton}">
+          <TextBlock x:Name="MaxGlyph" FontFamily="Segoe MDL2 Assets" Text="&#xE922;" FontSize="11"/>
+        </Button>
+        <Button Click="CloseWindow" shell:WindowChrome.IsHitTestVisibleInChrome="True" Style="{StaticResource CloseChromeButton}">
+          <TextBlock FontFamily="Segoe MDL2 Assets" Text="&#xE8BB;" FontSize="11"/>
+        </Button>
+      </StackPanel>
+      </Grid>
+    </Border>
+
+    <Border DockPanel.Dock="Top" BorderBrush="{StaticResource LineBrush}" BorderThickness="0,0,0,1" Padding="20,16">
+      <StackPanel>
+        <ScrollViewer HorizontalScrollBarVisibility="Auto" VerticalScrollBarVisibility="Disabled">
+          <ItemsControl ItemsSource="{Binding Drives}">
+            <ItemsControl.ItemsPanel>
+              <ItemsPanelTemplate>
+                <StackPanel Orientation="Horizontal"/>
+              </ItemsPanelTemplate>
+            </ItemsControl.ItemsPanel>
+            <ItemsControl.ItemTemplate>
+              <DataTemplate>
+                <Button Command="{Binding DataContext.SelectDriveCommand, RelativeSource={RelativeSource AncestorType=Window}}"
+                        CommandParameter="{Binding}"
+                        Margin="0,0,10,0" Width="250" HorizontalContentAlignment="Stretch" Padding="0">
+                  <Button.Style>
+                    <Style TargetType="Button" BasedOn="{StaticResource CardButton}">
+                      <Setter Property="Margin" Value="0,0,10,0"/>
+                      <Style.Triggers>
+                        <DataTrigger Binding="{Binding IsSelected}" Value="True">
+                          <Setter Property="BorderBrush" Value="{StaticResource AccentBrush}"/>
+                          <Setter Property="BorderThickness" Value="1"/>
+                        </DataTrigger>
+                      </Style.Triggers>
+                    </Style>
+                  </Button.Style>
+                  <Border Padding="12,10" HorizontalAlignment="Stretch">
+                    <StackPanel>
+                      <DockPanel>
+                        <TextBlock DockPanel.Dock="Right" Text="{Binding Badge}" FontSize="12">
+                          <TextBlock.Style>
+                            <Style TargetType="TextBlock">
+                              <Setter Property="Foreground" Value="{StaticResource MutedBrush}"/>
+                              <Style.Triggers>
+                                <DataTrigger Binding="{Binding Verdict}" Value="Ready">
+                                  <Setter Property="Foreground" Value="{StaticResource GoodBrush}"/>
+                                </DataTrigger>
+                                <DataTrigger Binding="{Binding Verdict}" Value="Caution">
+                                  <Setter Property="Foreground" Value="{StaticResource WarnBrush}"/>
+                                </DataTrigger>
+                                <DataTrigger Binding="{Binding Verdict}" Value="Blocked">
+                                  <Setter Property="Foreground" Value="{StaticResource BadBrush}"/>
+                                </DataTrigger>
+                              </Style.Triggers>
+                            </Style>
+                          </TextBlock.Style>
+                        </TextBlock>
+                        <TextBlock Text="{Binding Title}" FontWeight="SemiBold" TextTrimming="CharacterEllipsis"/>
+                      </DockPanel>
+                      <TextBlock Text="{Binding Line}" Margin="0,4,0,0" Foreground="{StaticResource MutedBrush}" FontSize="12" TextTrimming="CharacterEllipsis"/>
+                    </StackPanel>
+                  </Border>
+                </Button>
+              </DataTemplate>
+            </ItemsControl.ItemTemplate>
+          </ItemsControl>
+        </ScrollViewer>
+        <TextBlock Text="No USB drive detected." Margin="0,8,0,0" Foreground="{StaticResource MutedBrush}">
+          <TextBlock.Style>
+            <Style TargetType="TextBlock">
+              <Setter Property="Visibility" Value="Collapsed"/>
+              <Style.Triggers>
+                <DataTrigger Binding="{Binding Drives.Count}" Value="0">
+                  <Setter Property="Visibility" Value="Visible"/>
+                </DataTrigger>
+              </Style.Triggers>
+            </Style>
+          </TextBlock.Style>
+        </TextBlock>
+        <TextBlock Text="{Binding DriveReason}" Margin="0,8,0,0" Foreground="{StaticResource MutedBrush}" TextWrapping="Wrap"/>
+      </StackPanel>
+    </Border>
+
+    <Border DockPanel.Dock="Top" BorderBrush="{StaticResource LineBrush}" BorderThickness="0,0,0,1" Padding="20,0,20,0">
+      <StackPanel Orientation="Horizontal">
+        <Button Content="Transfer" Command="{Binding ShowTransferCommand}">
+          <Button.Style>
+            <Style TargetType="Button" BasedOn="{StaticResource TabButton}">
+              <Style.Triggers>
+                <DataTrigger Binding="{Binding Tab}" Value="0">
+                  <Setter Property="Foreground" Value="{StaticResource TextBrush}"/>
+                  <Setter Property="BorderBrush" Value="{StaticResource AccentBrush}"/>
+                  <Setter Property="FontWeight" Value="SemiBold"/>
+                </DataTrigger>
+              </Style.Triggers>
+            </Style>
+          </Button.Style>
+        </Button>
+        <Button Content="On the drive" Command="{Binding ShowLibraryCommand}">
+          <Button.Style>
+            <Style TargetType="Button" BasedOn="{StaticResource TabButton}">
+              <Style.Triggers>
+                <DataTrigger Binding="{Binding Tab}" Value="1">
+                  <Setter Property="Foreground" Value="{StaticResource TextBrush}"/>
+                  <Setter Property="BorderBrush" Value="{StaticResource AccentBrush}"/>
+                  <Setter Property="FontWeight" Value="SemiBold"/>
+                </DataTrigger>
+              </Style.Triggers>
+            </Style>
+          </Button.Style>
+        </Button>
+        <Button Content="Join splits" Command="{Binding ShowJoinCommand}">
+          <Button.Style>
+            <Style TargetType="Button" BasedOn="{StaticResource TabButton}">
+              <Style.Triggers>
+                <DataTrigger Binding="{Binding Tab}" Value="2">
+                  <Setter Property="Foreground" Value="{StaticResource TextBrush}"/>
+                  <Setter Property="BorderBrush" Value="{StaticResource AccentBrush}"/>
+                  <Setter Property="FontWeight" Value="SemiBold"/>
+                </DataTrigger>
+              </Style.Triggers>
+            </Style>
+          </Button.Style>
+        </Button>
+      </StackPanel>
+    </Border>
+
+    <Border DockPanel.Dock="Bottom" Background="{StaticResource BgBrush}" BorderBrush="{StaticResource LineBrush}" BorderThickness="0,1,0,0" Padding="20,12">
+      <DockPanel>
+        <TextBlock DockPanel.Dock="Right" Text="{Binding OverallDetail}" Foreground="{StaticResource MutedBrush}" VerticalAlignment="Center" Margin="12,0,0,0"/>
+        <StackPanel>
+          <TextBlock Text="{Binding Status}" TextWrapping="Wrap"/>
+          <ProgressBar Value="{Binding OverallFraction, Mode=OneWay}" Margin="0,8,0,0"/>
+        </StackPanel>
+      </DockPanel>
+    </Border>
+
+    <Grid Margin="20,8,20,12">
+      <Grid>
+        <Grid.Style>
+          <Style TargetType="Grid">
+            <Setter Property="Visibility" Value="Collapsed"/>
+            <Style.Triggers>
+              <DataTrigger Binding="{Binding Tab}" Value="0">
+                <Setter Property="Visibility" Value="Visible"/>
+              </DataTrigger>
+            </Style.Triggers>
+          </Style>
+        </Grid.Style>
+        <DockPanel>
+          <StackPanel DockPanel.Dock="Top" Orientation="Horizontal" Margin="0,0,0,12">
+            <Button Content="Add files" Command="{Binding AddFilesCommand}" Style="{StaticResource GhostButton}"/>
+            <Button Content="Add folder" Command="{Binding AddFolderCommand}" Style="{StaticResource GhostButton}"/>
+            <Button Content="Remove" Command="{Binding RemoveCommand}" Style="{StaticResource GhostButton}"/>
+            <Button Content="Eject" Command="{Binding EjectCommand}" Style="{StaticResource GhostButton}"/>
+            <CheckBox Content="Title names" IsChecked="{Binding UseTitleNames}" IsEnabled="{Binding CanEdit}"/>
+            <CheckBox Content="Hide extra parts" IsChecked="{Binding HideExtraParts}" IsEnabled="{Binding CanEdit}"/>
+            <CheckBox Content="Verify CRC" IsChecked="{Binding VerifyCrc}" IsEnabled="{Binding CanEdit}"/>
+          </StackPanel>
+
+          <Border DockPanel.Dock="Bottom" Background="{StaticResource CardBrush}" BorderBrush="{StaticResource LineBrush}" BorderThickness="1" CornerRadius="0" Padding="16" Margin="0,12,0,0" MaxHeight="180">
+            <ScrollViewer VerticalScrollBarVisibility="Auto">
+              <StackPanel>
+                <DockPanel Margin="0,0,0,8">
+                  <Button DockPanel.Dock="Right" Content="Stop" Command="{Binding StopCommand}" Margin="8,0,0,0">
+                    <Button.Style>
+                      <Style TargetType="Button" BasedOn="{StaticResource GhostButton}">
+                        <Setter Property="Visibility" Value="Collapsed"/>
+                        <Style.Triggers>
+                          <DataTrigger Binding="{Binding Transferring}" Value="True">
+                            <Setter Property="Visibility" Value="Visible"/>
+                          </DataTrigger>
+                        </Style.Triggers>
+                      </Style>
+                    </Button.Style>
+                  </Button>
+                  <Button Content="Start transfer" Command="{Binding StartCommand}" Style="{StaticResource PrimaryButton}" HorizontalAlignment="Left"/>
+                </DockPanel>
+                <TextBlock Text="{Binding StartHint}" Foreground="{StaticResource MutedBrush}" Margin="0,0,0,8"/>
+                <TextBlock Text="{Binding PlayTitle}" FontWeight="SemiBold"/>
+                <TextBlock Text="{Binding PlayBody}" TextWrapping="Wrap" Foreground="{StaticResource MutedBrush}" Margin="0,4,0,0"/>
+              </StackPanel>
+            </ScrollViewer>
+          </Border>
+
+          <Grid>
+            <ListBox ItemsSource="{Binding Queue}" SelectedItem="{Binding SelectedItem}" PreviewKeyDown="QueueKeyDown">
+              <ListBox.ItemTemplate>
+                <DataTemplate>
+                  <StackPanel>
+                    <DockPanel>
+                      <ComboBox DockPanel.Dock="Right" Width="168" Margin="12,0,0,0"
+                                ItemsSource="{Binding KindOptions}" SelectedItem="{Binding SelectedKind}"
+                                DisplayMemberPath="Label" IsEnabled="{Binding DataContext.CanEdit, RelativeSource={RelativeSource AncestorType=Window}}"/>
+                      <Button DockPanel.Dock="Right" Content="Replace" Margin="12,0,0,0"
+                              Command="{Binding DataContext.ReplaceCommand, RelativeSource={RelativeSource AncestorType=Window}}"
+                              CommandParameter="{Binding}">
+                        <Button.Style>
+                          <Style TargetType="Button" BasedOn="{StaticResource GhostButton}">
+                            <Setter Property="Visibility" Value="Collapsed"/>
+                            <Style.Triggers>
+                              <DataTrigger Binding="{Binding ShowReplace}" Value="True">
+                                <Setter Property="Visibility" Value="Visible"/>
+                              </DataTrigger>
+                            </Style.Triggers>
+                          </Style>
+                        </Button.Style>
+                      </Button>
+                      <TextBlock Text="{Binding Title}" FontWeight="SemiBold" FontSize="15" VerticalAlignment="Center" TextTrimming="CharacterEllipsis"/>
+                    </DockPanel>
+                    <TextBlock Text="{Binding Meta}" Margin="0,4,0,0" Foreground="{StaticResource MutedBrush}" FontSize="12"/>
+                    <TextBlock Text="{Binding Destination}" Margin="0,2,0,0" FontSize="13" Foreground="{StaticResource MutedBrush}" TextWrapping="Wrap"/>
+                    <TextBlock Text="{Binding Status}" Margin="0,4,0,0" TextWrapping="Wrap">
+                      <TextBlock.Style>
+                        <Style TargetType="TextBlock">
+                          <Setter Property="Foreground" Value="{StaticResource MutedBrush}"/>
+                          <Style.Triggers>
+                            <DataTrigger Binding="{Binding Tone}" Value="Good">
+                              <Setter Property="Foreground" Value="{StaticResource GoodBrush}"/>
+                            </DataTrigger>
+                            <DataTrigger Binding="{Binding Tone}" Value="Warn">
+                              <Setter Property="Foreground" Value="{StaticResource WarnBrush}"/>
+                            </DataTrigger>
+                            <DataTrigger Binding="{Binding Tone}" Value="Bad">
+                              <Setter Property="Foreground" Value="{StaticResource BadBrush}"/>
+                            </DataTrigger>
+                            <DataTrigger Binding="{Binding Tone}" Value="Accent">
+                              <Setter Property="Foreground" Value="{StaticResource AccentBrush}"/>
+                            </DataTrigger>
+                          </Style.Triggers>
+                        </Style>
+                      </TextBlock.Style>
+                    </TextBlock>
+                    <ProgressBar Value="{Binding Fraction, Mode=OneWay}" Margin="0,8,0,0"/>
+                  </StackPanel>
+                </DataTemplate>
+              </ListBox.ItemTemplate>
+            </ListBox>
+            <StackPanel HorizontalAlignment="Center" VerticalAlignment="Center" MaxWidth="420" IsHitTestVisible="False">
+              <StackPanel.Style>
+                <Style TargetType="StackPanel">
+                  <Setter Property="Visibility" Value="Collapsed"/>
+                  <Style.Triggers>
+                    <DataTrigger Binding="{Binding Queue.Count}" Value="0">
+                      <Setter Property="Visibility" Value="Visible"/>
+                    </DataTrigger>
+                  </Style.Triggers>
+                </Style>
+              </StackPanel.Style>
+              <TextBlock Text="Nothing queued" FontSize="22" FontWeight="SemiBold" FontFamily="Segoe UI" Foreground="{StaticResource TextBrush}" HorizontalAlignment="Center"/>
+              <TextBlock Text="Drop ISOs, PKG parts, ROMs, or an extracted package folder here." Margin="0,8,0,0" Foreground="{StaticResource MutedBrush}" TextAlignment="Center" TextWrapping="Wrap"/>
+            </StackPanel>
+          </Grid>
+        </DockPanel>
+      </Grid>
+
+      <Grid>
+        <Grid.Style>
+          <Style TargetType="Grid">
+            <Setter Property="Visibility" Value="Collapsed"/>
+            <Style.Triggers>
+              <DataTrigger Binding="{Binding Tab}" Value="1">
+                <Setter Property="Visibility" Value="Visible"/>
+              </DataTrigger>
+            </Style.Triggers>
+          </Style>
+        </Grid.Style>
+        <DockPanel>
+          <StackPanel DockPanel.Dock="Top" Orientation="Horizontal" Margin="0,0,0,12">
+            <Button Content="Refresh" Command="{Binding RefreshCommand}" Style="{StaticResource GhostButton}"/>
+            <Button Content="Organize for RetroArch" Command="{Binding OrganizeRomsCommand}" Style="{StaticResource GhostButton}"/>
+            <Button Content="Remove from drive" Command="{Binding DeleteLibraryCommand}" Style="{StaticResource GhostButton}"/>
+            <TextBlock Text="{Binding LibraryStatus}" VerticalAlignment="Center" Foreground="{StaticResource MutedBrush}"/>
+          </StackPanel>
+          <ListBox ItemsSource="{Binding Library}" SelectedItem="{Binding SelectedLibrary}">
+            <ListBox.ItemTemplate>
+              <DataTemplate>
+                <StackPanel>
+                  <TextBlock Text="{Binding Title}" FontWeight="SemiBold"/>
+                  <TextBlock Text="{Binding Meta}" Foreground="{StaticResource MutedBrush}" FontSize="12" Margin="0,2,0,0"/>
+                  <TextBlock Text="{Binding Path}" FontSize="13" Foreground="{StaticResource MutedBrush}" Margin="0,2,0,0" TextWrapping="Wrap"/>
+                </StackPanel>
+              </DataTemplate>
+            </ListBox.ItemTemplate>
+          </ListBox>
+        </DockPanel>
+      </Grid>
+
+      <Grid>
+        <Grid.Style>
+          <Style TargetType="Grid">
+            <Setter Property="Visibility" Value="Collapsed"/>
+            <Style.Triggers>
+              <DataTrigger Binding="{Binding Tab}" Value="2">
+                <Setter Property="Visibility" Value="Visible"/>
+              </DataTrigger>
+            </Style.Triggers>
+          </Style>
+        </Grid.Style>
+        <StackPanel MaxWidth="640" HorizontalAlignment="Left">
+          <TextBlock Text="Join a split set" FontSize="22" FontWeight="SemiBold" FontFamily="Segoe UI" Foreground="{StaticResource TextBrush}"/>
+          <TextBlock Text="Join .iso.0, .pkg.1, or .66600 pieces into one file on a disk that can hold it." Margin="0,8,0,0" TextWrapping="Wrap" Foreground="{StaticResource MutedBrush}"/>
+          <StackPanel Orientation="Horizontal" Margin="0,14,0,0">
+            <Button Content="Choose a piece" Command="{Binding PickJoinCommand}" Style="{StaticResource GhostButton}"/>
+            <Button Content="Join and save" Command="{Binding JoinCommand}" Style="{StaticResource PrimaryButton}"/>
+            <Button Content="Stop" Command="{Binding StopCommand}">
+              <Button.Style>
+                <Style TargetType="Button" BasedOn="{StaticResource GhostButton}">
+                  <Setter Property="Visibility" Value="Collapsed"/>
+                  <Style.Triggers>
+                    <DataTrigger Binding="{Binding Joining}" Value="True">
+                      <Setter Property="Visibility" Value="Visible"/>
+                    </DataTrigger>
+                  </Style.Triggers>
+                </Style>
+              </Button.Style>
+            </Button>
+          </StackPanel>
+          <TextBlock Text="{Binding JoinSummary}" Margin="0,14,0,0" FontWeight="SemiBold"/>
+          <ListBox ItemsSource="{Binding JoinParts}" Margin="0,8,0,0" MaxHeight="240"/>
+          <ProgressBar Value="{Binding JoinFraction, Mode=OneWay}" Margin="0,12,0,0"/>
+          <TextBlock Text="{Binding JoinStatus}" Margin="0,8,0,0" TextWrapping="Wrap" Foreground="{StaticResource MutedBrush}"/>
+        </StackPanel>
+      </Grid>
+    </Grid>
+  </DockPanel>
+</Window>
